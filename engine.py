@@ -1,24 +1,11 @@
-"""
-engine.py — Funcify backend
-POST /scrape — haal productdata op van een URL
-POST /score  — beoordeel productdata met de scoring engine
-GET  /health — readiness check
-"""
-
 import os
 import re
 import json
 import requests
-import anthropic
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-
-try:
-    import docx as python_docx
-    HAS_DOCX = True
-except ImportError:
-    HAS_DOCX = False
+import anthropic
 
 try:
     import openpyxl
@@ -29,545 +16,440 @@ except ImportError:
 app = Flask(__name__)
 CORS(app, origins=["https://funcify.eu", "https://fullfunc.github.io"])
 
-# ─── Scraper constants ───────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_cache = {}
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Referer": "https://www.google.com/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
 }
 
-INGREDIENT_PATTERN = re.compile(
-    r"(\d[\d.,]*\s*(?:mg|g|mcg|µg|iu|IU|ml|%|billion\s*CFU|CFU|billion))",
-    re.IGNORECASE,
-)
-
-# ─── Lazy file loader (loads on first /score request, cached after) ──────────
-
-_cache: dict = {}
-
-
-def _get_files() -> dict:
-    if _cache:
-        return _cache
-
-    base = os.path.dirname(os.path.abspath(__file__))
-
-    def read_docx(path: str) -> str:
-        if not HAS_DOCX or not os.path.exists(path):
-            return ""
-        try:
-            doc = python_docx.Document(path)
-            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        except Exception as e:
-            app.logger.warning("Could not read %s: %s", path, e)
-            return ""
-
-    def read_xlsx(path: str) -> str:
-        if not HAS_OPENPYXL or not os.path.exists(path):
-            return ""
-        try:
-            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            parts = []
-            for name in wb.sheetnames:
-                ws = wb[name]
-                rows = []
-                for row in ws.iter_rows(values_only=True):
-                    if any(c is not None for c in row):
-                        rows.append("\t".join("" if c is None else str(c) for c in row))
-                if rows:
-                    parts.append(f"=== {name} ===\n" + "\n".join(rows))
-            return "\n\n".join(parts)
-        except Exception as e:
-            app.logger.warning("Could not read %s: %s", path, e)
-            return ""
-
-    _cache["masterprompt"]  = read_docx(os.path.join(base, "Funcify masterprompt V10.docx"))
-    _cache["ingredient_db"] = read_xlsx(os.path.join(base, "Funcify. Master Ingredient 2.0.xlsx"))
-    _cache["engine_review"] = read_xlsx(os.path.join(base, "Funcify. Engine Review V4.xlsx"))
-    _cache["consumer_ui"]   = read_xlsx(os.path.join(base, "Funcify. Consumer UI.xlsx"))
-
-    return _cache
-
-
-# ─── Scraper helpers ─────────────────────────────────────────────────────────
-
-def fetch_html(url: str) -> tuple[str, BeautifulSoup]:
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    return resp.text, soup
-
-
-def fetch_html_playwright(url: str) -> tuple[str, BeautifulSoup]:
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=HEADERS["User-Agent"])
-        page.goto(url, timeout=20000, wait_until="domcontentloaded")
-        html = page.content()
-        browser.close()
-    soup = BeautifulSoup(html, "html.parser")
-    return html, soup
-
-
-def extract_text_blocks(soup: BeautifulSoup, *selectors) -> list[str]:
-    blocks = []
-    for sel in selectors:
-        for el in soup.select(sel):
-            text = el.get_text(" ", strip=True)
-            if text:
-                blocks.append(text)
-    return blocks
-
-
-# Known fillers/additives — matched case-insensitively against ingredient names
-FILLER_KEYWORDS = {
-    "magnesium stearate", "stearic acid", "silicon dioxide", "silica",
-    "microcrystalline cellulose", "mcc", "cellulose", "hydroxypropyl methylcellulose",
-    "hpmc", "gelatin", "gelatine", "dicalcium phosphate", "calcium carbonate",
-    "maltodextrin", "rice flour", "rice bran", "talc", "titanium dioxide",
-    "carrageenan", "carboxymethyl cellulose", "croscarmellose", "povidone",
-    "polyethylene glycol", "peg", "polysorbate", "sodium lauryl sulfate", "sls",
-    "artificial flavour", "artificial color", "artificial colour",
-    "natural flavour", "natural flavor", "sucralose", "acesulfame",
-    "aspartame", "sorbitol", "mannitol", "xylitol",
-}
+def load_engine_criteria():
+    if "criteria" in _cache:
+        return _cache["criteria"]
+    criteria = []
+    if not HAS_OPENPYXL:
+        return criteria
+    engine_path = os.path.join(BASE_DIR, "Funcify__Engine_Review_V4.xlsx")
+    if not os.path.exists(engine_path):
+        return criteria
+    try:
+        wb = openpyxl.load_workbook(engine_path, data_only=True)
+        if "Engine_review_score" in wb.sheetnames:
+            ws = wb["Engine_review_score"]
+            header_row = None
+            for row in ws.iter_rows():
+                vals = [str(c.value or "").strip() for c in row]
+                if "Category" in vals and "Criterion" in vals and "Weight" in vals:
+                    header_row = {v: i for i, v in enumerate(vals)}
+                    break
+            if header_row:
+                for row in ws.iter_rows():
+                    vals = [c.value for c in row]
+                    category = str(vals[header_row.get("Category", 0)] or "")
+                    if category in ["Category", "SUMMARY", "INPUT", "HELPERS", "MODEL SETTINGS", ""]:
+                        continue
+                    criterion = str(vals[header_row.get("Criterion", 1)] or "")
+                    weight_raw = vals[header_row.get("Weight", 2)]
+                    critical = str(vals[header_row.get("Critical? (Y/N)", 3)] or "N").strip().upper()
+                    applies_to = str(vals[header_row.get("AppliesTo", 4)] or "ALL").strip()
+                    consumer_impact = str(vals[header_row.get("Consumer_impact", 15)] or "")
+                    failure_type = str(vals[header_row.get("Failure_type", 14)] or "")
+                    try:
+                        weight = float(weight_raw) if weight_raw else 0
+                    except (ValueError, TypeError):
+                        weight = 0
+                    if criterion and weight > 0:
+                        criteria.append({
+                            "source": "core",
+                            "category": category,
+                            "criterion": criterion,
+                            "weight": weight,
+                            "critical": critical == "Y",
+                            "applies_to": applies_to,
+                            "consumer_impact": consumer_impact,
+                            "failure_type": failure_type
+                        })
+        if "Category_modules" in wb.sheetnames:
+            ws = wb["Category_modules"]
+            header_row = None
+            for row in ws.iter_rows():
+                vals = [str(c.value or "").strip() for c in row]
+                if "ModuleType" in vals and "Criterion" in vals and "Weight" in vals:
+                    header_row = {v: i for i, v in enumerate(vals)}
+                    break
+            if header_row:
+                for row in ws.iter_rows():
+                    vals = [c.value for c in row]
+                    module_type = str(vals[header_row.get("ModuleType", 0)] or "").strip()
+                    if not module_type or module_type in ["ModuleType", "Producttype", ""]:
+                        continue
+                    criterion = str(vals[header_row.get("Criterion", 2)] or "")
+                    weight_raw = vals[header_row.get("Weight", 3)]
+                    critical = str(vals[header_row.get("Critical", 4)] or "N").strip().upper()
+                    consumer_impact = str(vals[header_row.get("Consumer_impact", 15)] or "")
+                    try:
+                        weight = float(weight_raw) if weight_raw else 0
+                    except (ValueError, TypeError):
+                        weight = 0
+                    if criterion and weight > 0:
+                        criteria.append({
+                            "source": "module",
+                            "category": f"Module_{module_type}",
+                            "criterion": criterion,
+                            "weight": weight,
+                            "critical": critical == "Y",
+                            "applies_to": module_type,
+                            "consumer_impact": consumer_impact,
+                            "failure_type": "Quality fail"
+                        })
+        _cache["criteria"] = criteria
+    except Exception as e:
+        print(f"Error loading criteria: {e}")
+    return criteria
 
 
-def _is_filler(name: str) -> bool:
-    name_lower = name.lower().strip()
-    return any(kw in name_lower for kw in FILLER_KEYWORDS)
+def detect_product_type(product_data):
+    all_text = " ".join([
+        product_data.get("product_name", ""),
+        product_data.get("brand_name", ""),
+        " ".join([i.get("name", "") for i in product_data.get("ingredients", [])]),
+        " ".join(product_data.get("health_claims", []))
+    ]).lower()
+    if any(x in all_text for x in ["epa", "dha", "omega-3", "omega 3", "visolie", "fish oil", "krill"]):
+        return "OMEGA3"
+    if any(x in all_text for x in ["probiotic", "lactobacillus", "bifidobacterium", "cfu"]):
+        return "PROBIOTIC"
+    if any(x in all_text for x in ["vitamine", "vitamin", "d3", "b12", "b6", "folaat", "folate"]):
+        return "VITAMIN"
+    if any(x in all_text for x in ["magnesium", "zink", "zinc", "ijzer", "iron", "calcium", "selenium"]):
+        return "MINERAL"
+    if any(x in all_text for x in ["whey", "protein", "eiwit", "caseïne", "casein"]):
+        return "PROTEIN"
+    if any(x in all_text for x in ["creatine", "bcaa", "leucine", "beta-alanine"]):
+        return "SPORT"
+    if any(x in all_text for x in ["curcuma", "turmeric", "berberine", "resveratrol", "quercetin"]):
+        return "POLYPHENOL"
+    if any(x in all_text for x in ["ashwagandha", "rhodiola", "valeriaan", "ginkgo", "extract"]):
+        return "BOTANICAL"
+    return "ALL"
 
 
-def parse_ingredients_from_text(text: str) -> list[dict]:
-    ingredients = []
-    lines = [l.strip() for l in re.split(r"[\n;,]", text) if l.strip()]
-    for line in lines:
-        if len(line) < 3:
-            continue
-        dosage_match = INGREDIENT_PATTERN.search(line)
-        dosage = dosage_match.group(0).strip() if dosage_match else None
-
-        form_match = re.search(r"\bas\s+([A-Za-z][\w\s\-]{2,40})", line)
-        form = form_match.group(1).strip() if form_match else None
-
-        name = line
-        if dosage:
-            name = line[: dosage_match.start()].strip(" -(")
-        if form_match:
-            name = re.sub(r"\s*\([^)]*\)", "", name).strip()
-
-        if name:
-            ingredients.append({
-                "name": name,
-                "dosage": dosage,
-                "molecular_form": form,
-                "type": "vul-additief" if _is_filler(name) else "actief",
-            })
-    return ingredients
-
-
-def scrape_product(soup: BeautifulSoup) -> dict:
-    result = {
-        "product_name": None,
-        "brand_name": None,
-        "serving_size": None,
-        "ingredients": [],
-        "health_claims": [],
-        "certifications": [],
-        "pricing": {},
-        "certification_urls": [],
-    }
-
-    for sel in ["h1", '[class*="product-title"]', '[class*="product-name"]', '[itemprop="name"]']:
-        el = soup.select_one(sel)
-        if el:
-            result["product_name"] = el.get_text(strip=True)
-            break
-
-    for sel in ['[itemprop="brand"]', '[class*="brand"]', '[class*="vendor"]', "a.brand"]:
-        el = soup.select_one(sel)
-        if el:
-            result["brand_name"] = el.get_text(strip=True)
-            break
-
-    full_text = soup.get_text(" ")
-    serving_match = re.search(
-        r"serving\s+size[:\s]+([^\n.]{3,60})", full_text, re.IGNORECASE
-    )
-    if serving_match:
-        result["serving_size"] = serving_match.group(1).strip()
-
-    ingredient_blocks = extract_text_blocks(
-        soup,
-        '[class*="ingredient"]',
-        '[id*="ingredient"]',
-        '[class*="supplement-facts"]',
-        '[id*="supplement"]',
-        "table",
-    )
-    raw_ingredient_text = " ".join(ingredient_blocks)
-
-    label_match = re.search(
-        r"(?:ingredients?|supplement facts)[:\s]+([\s\S]{10,2000}?)(?:\n\n|\.\s+[A-Z]|$)",
-        full_text,
-        re.IGNORECASE,
-    )
-    if label_match:
-        raw_ingredient_text += " " + label_match.group(1)
-
-    if raw_ingredient_text.strip():
-        result["ingredients"] = parse_ingredients_from_text(raw_ingredient_text)
-
-    for match in re.finditer(
-        r"(?:supports?|promotes?|helps?|boosts?|improves?|enhances?)[^.!?\n]{5,120}",
-        full_text, re.IGNORECASE
-    ):
-        claim = match.group(0).strip()
-        if claim not in result["health_claims"]:
-            result["health_claims"].append(claim)
-    result["health_claims"] = result["health_claims"][:10]
-
-    cert_keywords = [
-        "certified", "non-gmo", "gmp", "usda organic", "nsf", "informed sport",
-        "third.party tested", "gluten.free", "vegan", "kosher", "halal", "organic",
-    ]
-    for keyword in cert_keywords:
-        if re.search(keyword, full_text, re.IGNORECASE):
-            label = keyword.replace(".", "-").title()
-            if label not in result["certifications"]:
-                result["certifications"].append(label)
-
-    # --- Pricing ---
-    price_match = re.search(
-        r"(?:€|EUR|USD|\$|£)\s*(\d[\d.,]+)|\b(\d[\d.,]+)\s*(?:€|EUR)",
-        full_text, re.IGNORECASE
-    )
-    if price_match:
-        result["pricing"]["price"] = (price_match.group(1) or price_match.group(2)).strip()
-
-    capsule_match = re.search(
-        r"(\d+)\s*(?:capsules?|caps?|tablets?|tabs?|softgels?|vegcaps?|vcaps?)",
-        full_text, re.IGNORECASE
-    )
-    if capsule_match:
-        result["pricing"]["units"] = capsule_match.group(1)
-        result["pricing"]["unit_type"] = capsule_match.group(0).replace(capsule_match.group(1), "").strip()
-
-    content_match = re.search(
-        r"(\d[\d.,]*)\s*(g|gram|ml|mg)\b(?!\s*per)",
-        full_text, re.IGNORECASE
-    )
-    if content_match:
-        result["pricing"]["content"] = content_match.group(1) + " " + content_match.group(2)
-
-    # --- Certification and document URLs ---
-    doc_patterns = re.compile(
-        r"https?://[^\s\"'>]+(?:coa|certificate|lab.?report|analysis|specification|sds|tds|datasheet)[^\s\"'>]*",
-        re.IGNORECASE
-    )
-    for match in doc_patterns.finditer(str(soup)):
-        url_found = match.group(0).rstrip(".,)")
-        if url_found not in result["certification_urls"]:
-            result["certification_urls"].append(url_found)
-
-    # Also collect href links from cert-related anchor text
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        anchor_text = a.get_text(strip=True).lower()
-        if any(kw in anchor_text for kw in ["certificate", "coa", "lab report", "tested", "verified", "analysis"]):
-            if href.startswith("http") and href not in result["certification_urls"]:
-                result["certification_urls"].append(href)
-
-    return result
-
-
-def is_sufficient(data: dict) -> bool:
-    return bool(data.get("product_name")) and len(data.get("ingredients", [])) > 0
-
-
-def anthropic_fallback(raw_text: str) -> dict:
+def evaluate_criteria_with_claude(product_data, criteria, product_type):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    relevant_criteria = []
+    for c in criteria:
+        applies = c["applies_to"]
+        if applies == "ALL" or applies == product_type or (applies == "SPECIFIC" and product_type != "ALL"):
+            relevant_criteria.append(c)
+    core_criteria = [c for c in relevant_criteria if c["source"] == "core"][:50]
+    module_criteria = [c for c in relevant_criteria if c["source"] == "module"][:20]
+    all_relevant = core_criteria + module_criteria
+    criteria_text = "\n".join([
+        f"{i+1}. [{c['category']}] {c['criterion']} (weight={c['weight']}, critical={'JA' if c['critical'] else 'NEE'})"
+        for i, c in enumerate(all_relevant)
+    ])
+    ingredients_text = "\n".join([
+        f"- {ing.get('name', 'onbekend')}: {ing.get('amount', '?')} {ing.get('unit', '')} ({ing.get('form', 'vorm onbekend')})"
+        for ing in product_data.get("ingredients", [])
+    ])
+    system_prompt = """Je bent de Funcify beoordelingsengine. Evalueer elk criterium op basis van de productdata.
+REGELS:
+- Pass=1: informatie aanwezig en voldoet aan criterium
+- Fail=0: informatie aanwezig maar voldoet NIET (bewijs van slechte kwaliteit)
+- Onbekend=-1: informatie niet beschikbaar (DATA_LACUNE, neutraal, nooit negatief)
+- Ontbrekende data is NOOIT negatief. Alleen bewezen slechte kwaliteit telt als Fail.
+- VERBODEN: "studies tonen", "literatuur zegt", "klinisch bewezen" - alleen label/website feiten
+- Geef alleen valide JSON terug."""
+    user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')}
+Merk: {product_data.get('brand_name', 'Onbekend')}
+Type: {product_type}
+Serving size: {product_data.get('serving_size', 'onbekend')}
+Verpakkingsgrootte: {product_data.get('package_size', 'onbekend')}
+Prijs: {product_data.get('price', 'onbekend')}
 
-    prompt = f"""You are a supplement product data extractor.
+INGREDIENTEN:
+{ingredients_text if ingredients_text else 'Geen ingredienten gevonden'}
 
-Extract the following fields from the product page text below and return ONLY valid JSON (no markdown, no explanation):
+GEZONDHEIDSCLAIMS:
+{chr(10).join(product_data.get('health_claims', [])) or 'Geen'}
 
+CERTIFICERINGEN:
+{', '.join(product_data.get('certifications', [])) or 'Geen gevonden'}
+
+AANVULLENDE INFO:
+{product_data.get('additional_info', '')[:1500]}
+
+CRITERIA:
+{criteria_text}
+
+Geef terug als JSON:
 {{
-  "product_name": "string or null",
-  "brand_name": "string or null",
-  "serving_size": "string or null",
-  "ingredients": [
-    {{"name": "string", "dosage": "string or null", "molecular_form": "string or null"}}
+  "evaluations": [
+    {{"criterion_index": 1, "pass_value": 1, "evidence": "korte uitleg", "data_quality": "EXACT|AFGELEID|ONVOLLEDIG|NIET_GEVONDEN"}}
   ],
-  "health_claims": ["string"],
-  "certifications": ["string"]
-}}
-
-Rules:
-- molecular_form: the specific chemical form, e.g. "magnesium glycinate", "methylcobalamin"
-- dosage: the amount including unit, e.g. "500 mg", "10 mcg"
-- health_claims: up to 10 short benefit statements from the page
-- certifications: any quality or regulatory badges mentioned
-
-Page text:
-{raw_text[:12000]}
-"""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
+  "critical_gate_triggered": false,
+  "key_strengths": ["max 3 sterke punten"],
+  "key_weaknesses": ["max 3 zwakke punten"],
+  "additives_found": ["vulstoffen lijst"],
+  "inferior_forms_found": ["inferieure vormen indien aanwezig"],
+  "price_per_serving": "berekend indien mogelijk"
+}}"""
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
     )
+    raw = response.content[0].text.strip()
+    raw = re.sub(r"```json\s*", "", raw)
+    raw = re.sub(r"```\s*", "", raw)
+    return json.loads(raw), all_relevant
 
-    raw = message.content[0].text.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
+
+def calculate_score(evaluations_data, criteria):
+    evaluations = evaluations_data.get("evaluations", [])
+    total_raw_score = 0
+    total_max_weight = 0
+    critical_fail = False
+    non_verifiable_count = 0
+    for i, criterion in enumerate(criteria):
+        eval_item = next((e for e in evaluations if e.get("criterion_index") == i + 1), None)
+        pass_value = eval_item.get("pass_value", -1) if eval_item else -1
+        weight = criterion["weight"]
+        if pass_value == -1:
+            non_verifiable_count += 1
+            total_max_weight += weight
+        elif pass_value == 1:
+            total_raw_score += weight
+            total_max_weight += weight
+        elif pass_value == 0:
+            total_max_weight += weight
+            if criterion["critical"]:
+                critical_fail = True
+    if total_max_weight == 0:
+        return 0, False, 0
+    score_pct = total_raw_score / total_max_weight
+    if critical_fail:
+        score_pct = min(score_pct, 0.49)
+    return score_pct, critical_fail, non_verifiable_count
+
+
+def determine_verdict(score_pct, critical_fail):
+    score_100 = round(score_pct * 100)
+    if critical_fail and score_100 < 50:
+        return score_100, "Afkeur", "Af te raden"
+    elif score_100 >= 85:
+        return score_100, "Elite", "Koopwaardig"
+    elif score_100 >= 70:
+        return score_100, "Degelijk", "Koopwaardig"
+    elif score_100 >= 55:
+        return score_100, "Matig", "Alleen met context"
+    else:
+        return score_100, "Afkeur", "Af te raden"
+
+
+def generate_consumer_output(product_data, evaluations_data, criteria, score_100, kwalificatie, verdict, product_type, critical_fail):
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    strengths = evaluations_data.get("key_strengths", [])
+    weaknesses = evaluations_data.get("key_weaknesses", [])
+    additives = evaluations_data.get("additives_found", [])
+    inferior_forms = evaluations_data.get("inferior_forms_found", [])
+    price_per_serving = evaluations_data.get("price_per_serving", "")
+    ingredients_text = "\n".join([
+        f"- {ing.get('name', '')}: {ing.get('amount', '')} {ing.get('unit', '')} ({ing.get('form', '')})"
+        for ing in product_data.get("ingredients", [])
+    ])
+    system_prompt = """Je bent de Funcify consumer output generator. Schrijf heldere eerlijke beoordelingen in Nederlands.
+TOON: Direct, eerlijk, consumentvriendelijk. Geen jargon. Geen medisch advies.
+VERBODEN: studies tonen, literatuur zegt, klinisch bewezen, therapeutisch.
+DATA_LACUNE = neutraal, nooit negatief. Geef alleen valide JSON terug."""
+    user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')} ({product_data.get('brand_name', 'Onbekend')})
+Score: {score_100}/100 | Kwalificatie: {kwalificatie} | Verdict: {verdict}
+Critical gate: {'JA' if critical_fail else 'NEE'}
+Prijs per serving: {price_per_serving or 'onbekend'}
+
+INGREDIENTEN:
+{ingredients_text or 'Niet gevonden'}
+
+VULSTOFFEN: {', '.join(additives) or 'Geen'}
+INFERIEURE VORMEN: {', '.join(inferior_forms) or 'Geen'}
+STERKE PUNTEN: {', '.join(strengths) or 'Geen'}
+ZWAKKE PUNTEN: {', '.join(weaknesses) or 'Geen'}
+
+Genereer JSON:
+{{
+  "wat_doet": "2-3 zinnen wat dit supplement doet in gewone taal",
+  "beoordeling_tabel": [
+    {{"aspect": "Moleculaire vormen", "bevinding": "wat staat op label over vormen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Doseringen", "bevinding": "exacte doseringen per dagdosering", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Bioavailabiliteit", "bevinding": "hoe goed worden vormen opgenomen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Transparantie label", "bevinding": "zijn ingredienten, vormen, doseringen volledig", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Certificeringen", "bevinding": "welke certificeringen aanwezig", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Gezondheidsclaims", "bevinding": "zijn claims reeel en in lijn met ingredienten", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Serving size", "bevinding": "serving size, dagdosering en aantal servings", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Vulstoffen en additieven", "bevinding": "alle vulstoffen en additieven uit ingrediëntenlijst", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}}
+  ],
+  "highlights": [
+    {{"type": "positief", "tekst": "sterk punt"}},
+    {{"type": "negatief", "tekst": "zwak punt"}}
+  ],
+  "context_flags": ["waarschuwingen voor specifieke groepen indien van toepassing"],
+  "wat_zou_beter": "wat zou een beter product anders doen",
+  "voor_wie": "voor wie nog bruikbaar",
+  "consumer_summary": "2-3 zinnen samenvatting"
+}}"""
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=3000,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
+    )
+    raw = response.content[0].text.strip()
+    raw = re.sub(r"```json\s*", "", raw)
+    raw = re.sub(r"```\s*", "", raw)
     return json.loads(raw)
 
 
-# ─── Engine helpers ──────────────────────────────────────────────────────────
+AMOUNT_PAT = re.compile(r"(\d[\d.,]*)\s*(mg|g|mcg|µg|ug|ml|ie|iu|kve|cfu|%)", re.I)
 
-def _ingredient_keywords(product_ingredients: list) -> set:
-    words = set()
-    for ing in product_ingredients:
-        name = (ing.get("name") or "").lower()
-        form = (ing.get("molecular_form") or "").lower()
-        for part in re.split(r"[\s,\-]+", name + " " + form):
-            if len(part) > 3:
-                words.add(part)
-    return words
+def fetch_html(url):
+    response = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+    response.raise_for_status()
+    return BeautifulSoup(response.content, "lxml")
 
+def extract_text_blocks(soup, selectors):
+    texts = []
+    for sel in selectors:
+        for el in soup.select(sel):
+            t = el.get_text(" ", strip=True)
+            if t:
+                texts.append(t)
+    return texts
 
-def filter_ingredient_db(db_text: str, product_ingredients: list) -> str:
-    if not db_text or not product_ingredients:
-        return db_text[:10000]
-
-    keywords = _ingredient_keywords(product_ingredients)
-    if not keywords:
-        return db_text[:10000]
-
-    lines = db_text.splitlines()
-    kept = []
+def parse_ingredients_from_text(text):
+    ingredients = []
+    lines = re.split(r"[,;|\n]", text)
     for line in lines:
-        if line.startswith("===") or not line.strip():
-            kept.append(line)
+        line = line.strip()
+        if not line or len(line) < 3:
             continue
-        if any(kw in line.lower() for kw in keywords):
-            kept.append(line)
+        match = AMOUNT_PAT.search(line)
+        if match:
+            amount_str = match.group(1).replace(",", ".")
+            unit = match.group(2).lower()
+            name = line[:match.start()].strip(" ()-:")
+            if name:
+                ingredients.append({"name": name, "amount": float(amount_str) if amount_str else None, "unit": unit, "form": ""})
+    return ingredients
 
-    result = "\n".join(kept)
-    return result if len(result) > 200 else db_text[:10000]
-
-
-_OUTPUT_SCHEMA = """\
-Geef UITSLUITEND de volgende JSON terug — geen markdown-omhulsel, geen uitleg:
-
-{
-  "product_name": "string",
-  "brand": "string",
-  "score": <integer 0-100>,
-  "kwalificatie": "Elite" | "Degelijk" | "Matig" | "Afkeur",
-  "verdict": "Koopwaardig" | "Alleen met context" | "Af te raden",
-  "wat_doet": "string — wat doet dit supplement in gewone consumententaal",
-  "beoordeling_tabel": [
-    {
-      "criterium": "string",
-      "bevinding": "string",
-      "oordeel": "Goed" | "Matig" | "Slecht" | "DATA_LACUNE"
+def scrape_product(soup):
+    selectors_name = ["h1", ".product-title", ".product-name", '[itemprop="name"]']
+    selectors_brand = [".brand", ".manufacturer", '[itemprop="brand"]']
+    name_texts = extract_text_blocks(soup, selectors_name)
+    brand_texts = extract_text_blocks(soup, selectors_brand)
+    price_texts = extract_text_blocks(soup, [".price", "[class*='price']", "[itemprop='price']"])
+    page_text = soup.get_text(" ", strip=True)
+    ing_match = re.search(
+        r"(?:ingredi[eë]nten|samenstelling|inhoudsstoffen|ingredients)[:\s]*(.{20,800}?)(?:\n\n|\*|©|Bewaar|Gebruiksaanwijzing|Aanbevolen|$)",
+        page_text, re.I | re.S
+    )
+    full_ingredient_text = ing_match.group(1) if ing_match else page_text[:2000]
+    ingredients = parse_ingredients_from_text(full_ingredient_text)
+    cert_keywords = ["gmp", "iso", "nzvt", "informed sport", "ifos", "creapure", "vegan", "biologisch", "organic", "kosher", "halal", "glutenvrij", "lactosevrij"]
+    certifications = [kw for kw in cert_keywords if kw.lower() in page_text.lower()]
+    claims_texts = extract_text_blocks(soup, [".claims", "[class*='claim']", ".usp"])
+    health_claims = [c for c in claims_texts if len(c) > 10][:5]
+    serving_match = re.search(r"(?:per\s+dagdosering|serving size|dagdosering)[:\s]*([^\n]+)", page_text, re.I)
+    serving_size = serving_match.group(1).strip() if serving_match else ""
+    package_match = re.search(r"(\d+)\s*(?:capsules?|tabletten?|softgels?|vegicaps?|stuks?)", page_text, re.I)
+    package_size = package_match.group(0) if package_match else ""
+    return {
+        "product_name": (name_texts[0] if name_texts else "")[:200],
+        "brand_name": (brand_texts[0] if brand_texts else "")[:100],
+        "ingredients": ingredients[:40],
+        "serving_size": serving_size[:200],
+        "package_size": package_size[:100],
+        "price": (price_texts[0] if price_texts else "")[:50],
+        "health_claims": health_claims,
+        "certifications": certifications,
+        "additional_info": page_text[:2000]
     }
-  ],
-  "highlights": {
-    "positief": ["string"],
-    "negatief": ["string"]
-  },
-  "context_flags": ["string — specifieke waarschuwingen per doelgroep"],
-  "wat_zou_beter": "string — concrete verbeterpunten voor een beter product",
-  "voor_wie": "string — voor wie is dit product (nog) bruikbaar ondanks tekortkomingen",
-  "consumer_summary": "string — volledige aankoopadviessamenvatting in B1-taalniveau"
-}
 
-REGEL 1 — ONTBREKENDE DATA:
-Ontbrekende data is NOOIT negatief. Als informatie niet beschikbaar is op het label of de website, gebruik dan DATA_LACUNE als beoordeling met score neutraal. Alleen bewezen slechte kwaliteit (ethylester, oxide vorm, proprietary blend, bewezen contaminatie) telt als negatief.
+def is_sufficient(data):
+    return bool(data.get("product_name")) and len(data.get("ingredients", [])) >= 1
 
-REGEL 2 — GEEN EXTERNE INTERPRETATIE:
-Schrijf NOOIT zinnen met "studies tonen", "literatuur zegt", "klinisch bewezen", "onderzoek wijst uit". Baseer alle conclusies alleen op wat letterlijk op het label of de productpagina staat, aangevuld met jouw ingrediëntendatabase.
-
-REGEL 3 — VASTE OUTPUTSTRUCTUUR BEOORDELINGSTABEL:
-De beoordeling_tabel bevat altijd exact deze acht rijen in deze volgorde, met exact deze namen:
-  1. Moleculaire vormen
-  2. Doseringen
-  3. Bioavailabiliteit
-  4. Transparantie label
-  5. Certificeringen
-  6. Gezondheidsclaims
-  7. Serving size
-  8. Vulstoffen en additieven
-Geen extra rijen. Geen andere namen. Altijd alle acht, altijd in deze volgorde.
-
-Scoringsgrenzen:
-  Elite    85-100  → Koopwaardig
-  Degelijk 65-84   → Koopwaardig
-  Matig    45-64   → Alleen met context
-  Afkeur   0-44    → Af te raden\
-"""
-
-
-def build_messages(product_data: dict) -> tuple[str, str]:
-    files = _get_files()
-
-    product_ingredients = product_data.get("ingredients", [])
-    relevant_db = filter_ingredient_db(files["ingredient_db"], product_ingredients)
-
-    system_parts = []
-    if files["masterprompt"]:
-        system_parts.append(files["masterprompt"][:20000])
-    system_parts.append(
-        "Je bent de Funcify scoring engine. "
-        "Je analyseert supplementproducten wetenschappelijk en geeft eerlijk advies aan consumenten. "
-        "Je output is altijd geldige JSON."
-    )
-    system_prompt = "\n\n".join(system_parts)
-
-    sections = []
-
-    if relevant_db.strip():
-        sections.append(
-            "## INGREDIENT DATABASE (gefilterd op productingredient)\n"
-            + relevant_db[:12000]
-        )
-    if files["engine_review"].strip():
-        sections.append(
-            "## SCORINGSCRITERIA EN GEWICHTEN (Engine Review V4)\n"
-            + files["engine_review"][:6000]
-        )
-    if files["consumer_ui"].strip():
-        sections.append(
-            "## KLACHTDEFINITIES EN CONSUMENTENCATEGORIEEN (Consumer UI)\n"
-            + files["consumer_ui"][:4000]
-        )
-
-    sections.append(
-        "## TE BEOORDELEN PRODUCT\n"
-        + json.dumps(product_data, ensure_ascii=False, indent=2)
-    )
-    sections.append("## GEVRAAGDE OUTPUT\n" + _OUTPUT_SCHEMA)
-
-    return system_prompt, "\n\n".join(sections)
-
-
-def score_product(product_data: dict) -> dict:
-    system_prompt, user_message = build_messages(product_data)
-
+def anthropic_fallback(url, page_text=""):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    prompt = f"""Analyseer deze supplementpagina en extraheer productinformatie.
+URL: {url}
+Pagina tekst: {page_text[:3000] if page_text else 'Niet beschikbaar'}
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-    )
-
+Geef terug als JSON:
+{{"product_name": "naam", "brand_name": "merk", "ingredients": [{{"name": "naam", "amount": 0, "unit": "mg", "form": "vorm"}}], "serving_size": "serving", "package_size": "verpakkingsgrootte", "price": "prijs", "health_claims": ["claim"], "certifications": ["cert"], "additional_info": "info"}}"""
+    response = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=1500, messages=[{"role": "user", "content": prompt}])
     raw = response.content[0].text.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-    raw = re.sub(r"\s*```\s*$", "", raw, flags=re.MULTILINE)
+    raw = re.sub(r"```json\s*", "", raw)
+    raw = re.sub(r"```\s*", "", raw)
+    try:
+        return json.loads(raw)
+    except:
+        return {"product_name": "", "brand_name": "", "ingredients": [], "health_claims": [], "certifications": [], "additional_info": ""}
 
-    result = json.loads(raw)
-
-    score = int(result.get("score", 0))
-    if score >= 85:
-        result["kwalificatie"] = "Elite"
-        result["verdict"] = "Koopwaardig"
-    elif score >= 65:
-        result["kwalificatie"] = "Degelijk"
-        result["verdict"] = "Koopwaardig"
-    elif score >= 45:
-        result["kwalificatie"] = "Matig"
-        result["verdict"] = "Alleen met context"
-    else:
-        result["kwalificatie"] = "Afkeur"
-        result["verdict"] = "Af te raden"
-
-    return result
-
-
-# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.route("/scrape", methods=["POST"])
 def scrape():
-    body = request.get_json(force=True, silent=True)
-    if not body or not body.get("url"):
-        return jsonify({"error": "Missing 'url' in request body"}), 400
-
-    url = body["url"]
-
-    soup = None
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+    product_data = {}
+    page_text = ""
     try:
-        _, soup = fetch_html(url)
-    except (requests.RequestException, requests.exceptions.Timeout) as e:
-        app.logger.warning("Fetch failed for %s: %s — falling back to Anthropic", url, e)
-
-    if soup is not None:
-        data = scrape_product(soup)
+        soup = fetch_html(url)
         page_text = soup.get_text(" ", strip=True)
-    else:
-        data = {}
-        page_text = ""
-
-    if not is_sufficient(data):
-        # Fallback 1: Anthropic op beschikbare paginatekst
+        product_data = scrape_product(soup)
+        product_data["_source"] = "scraper"
+    except Exception as e:
+        product_data["_source"] = "error"
+        product_data["_error"] = str(e)
+    if not is_sufficient(product_data):
         try:
-            data = anthropic_fallback(page_text)
-            data["_source"] = "anthropic_fallback"
+            product_data = anthropic_fallback(url, page_text)
+            product_data["_source"] = "anthropic_fallback"
         except Exception as e:
-            data["_fallback_error"] = str(e)
-            data["_source"] = "scraper_partial"
-
-    # Fallback 2: Playwright als er nog steeds geen ingrediënten zijn
-    if not data.get("ingredients"):
-        try:
-            app.logger.info("No ingredients yet — trying Playwright for %s", url)
-            _, pw_soup = fetch_html_playwright(url)
-            pw_data = scrape_product(pw_soup)
-            if is_sufficient(pw_data):
-                pw_data["_source"] = "playwright"
-                return jsonify(pw_data)
-            # Geef Playwright-paginatekst aan Anthropic als ook scraping onvoldoende is
-            pw_text = pw_soup.get_text(" ", strip=True)
-            pw_data = anthropic_fallback(pw_text)
-            pw_data["_source"] = "playwright_anthropic_fallback"
-            return jsonify(pw_data)
-        except Exception as e:
-            app.logger.warning("Playwright fallback failed for %s: %s", url, e)
-            data.setdefault("_source", "scraper_partial")
-    else:
-        if "_source" not in data:
-            data["_source"] = "scraper"
-
-    return jsonify(data)
+            product_data["_fallback_error"] = str(e)
+    return jsonify(product_data)
 
 
 @app.route("/score", methods=["POST"])
 def score():
-    data = request.get_json(silent=True) or {}
-    url = data.get("url", "") or data.get("product_url", "") or ""
-
+    product_data = request.get_json(silent=True) or {}
+    if not product_data.get("product_name") and not product_data.get("ingredients"):
+        return jsonify({"error": "No product data provided"}), 400
     try:
-        result = score_product(data)
-        return jsonify(result)
-    except json.JSONDecodeError as e:
-        return jsonify({"error": f"AI retourneerde ongeldige JSON: {e}"}), 500
-    except anthropic.APIError as e:
-        return jsonify({"error": f"Anthropic API fout: {e}"}), 502
+        criteria = load_engine_criteria()
+        product_type = detect_product_type(product_data)
+        evaluations_data, relevant_criteria = evaluate_criteria_with_claude(product_data, criteria, product_type)
+        score_pct, critical_fail, non_verifiable_count = calculate_score(evaluations_data, relevant_criteria)
+        score_100, kwalificatie, verdict = determine_verdict(score_pct, critical_fail)
+        consumer_output = generate_consumer_output(product_data, evaluations_data, relevant_criteria, score_100, kwalificatie, verdict, product_type, critical_fail)
+        return jsonify({
+            "product_name": product_data.get("product_name", "Onbekend"),
+            "brand": product_data.get("brand_name", "Onbekend"),
+            "score": score_100,
+            "kwalificatie": kwalificatie,
+            "verdict": verdict,
+            "product_type": product_type,
+            "critical_gate": critical_fail,
+            "non_verifiable_count": non_verifiable_count,
+            "criteria_evaluated": len(relevant_criteria),
+            **consumer_output
+        })
     except Exception as e:
-        app.logger.exception("Onverwachte fout in /score")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Engine error: {str(e)}"}), 500
 
 
 @app.route("/health", methods=["GET"])

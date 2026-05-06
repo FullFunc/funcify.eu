@@ -2,6 +2,7 @@ flask
 flask-cors
 requests
 beautifulsoup4
+lxml
 anthropic
 gunicorn
 python-docx
