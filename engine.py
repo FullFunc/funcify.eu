@@ -7,7 +7,6 @@ GET  /health — readiness check
 import os
 import re
 import json
-import functools
 import anthropic
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -27,52 +26,52 @@ except ImportError:
 app = Flask(__name__)
 CORS(app, origins=["https://funcify.eu", "https://fullfunc.github.io"])
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ─── Lazy file loader (loads on first /score request, cached after) ──────────
 
-MASTERPROMPT_PATH  = os.path.join(BASE_DIR, "Funcify masterprompt V10.docx")
-INGREDIENT_DB_PATH = os.path.join(BASE_DIR, "Funcify. Master Ingredient 2.0.xlsx")
-ENGINE_REVIEW_PATH = os.path.join(BASE_DIR, "Funcify. Engine Review V4.xlsx")
-CONSUMER_UI_PATH   = os.path.join(BASE_DIR, "Funcify. Consumer UI.xlsx")
-
-# ─── File loaders (process-level cache) ─────────────────────────────────────
-
-@functools.lru_cache(maxsize=None)
-def _read_docx(path: str) -> str:
-    if not HAS_DOCX or not os.path.exists(path):
-        return ""
-    try:
-        doc = python_docx.Document(path)
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-    except Exception as e:
-        app.logger.warning("Could not read %s: %s", path, e)
-        return ""
+_cache: dict = {}
 
 
-@functools.lru_cache(maxsize=None)
-def _read_xlsx(path: str) -> str:
-    if not HAS_OPENPYXL or not os.path.exists(path):
-        return ""
-    try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        parts = []
-        for name in wb.sheetnames:
-            ws = wb[name]
-            rows = []
-            for row in ws.iter_rows(values_only=True):
-                if any(c is not None for c in row):
-                    rows.append("\t".join("" if c is None else str(c) for c in row))
-            if rows:
-                parts.append(f"=== {name} ===\n" + "\n".join(rows))
-        return "\n\n".join(parts)
-    except Exception as e:
-        app.logger.warning("Could not read %s: %s", path, e)
-        return ""
+def _get_files() -> dict:
+    if _cache:
+        return _cache
 
+    base = os.path.dirname(os.path.abspath(__file__))
 
-def load_masterprompt()  -> str: return _read_docx(MASTERPROMPT_PATH)
-def load_ingredient_db() -> str: return _read_xlsx(INGREDIENT_DB_PATH)
-def load_engine_review() -> str: return _read_xlsx(ENGINE_REVIEW_PATH)
-def load_consumer_ui()   -> str: return _read_xlsx(CONSUMER_UI_PATH)
+    def read_docx(path: str) -> str:
+        if not HAS_DOCX or not os.path.exists(path):
+            return ""
+        try:
+            doc = python_docx.Document(path)
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except Exception as e:
+            app.logger.warning("Could not read %s: %s", path, e)
+            return ""
+
+    def read_xlsx(path: str) -> str:
+        if not HAS_OPENPYXL or not os.path.exists(path):
+            return ""
+        try:
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            parts = []
+            for name in wb.sheetnames:
+                ws = wb[name]
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    if any(c is not None for c in row):
+                        rows.append("\t".join("" if c is None else str(c) for c in row))
+                if rows:
+                    parts.append(f"=== {name} ===\n" + "\n".join(rows))
+            return "\n\n".join(parts)
+        except Exception as e:
+            app.logger.warning("Could not read %s: %s", path, e)
+            return ""
+
+    _cache["masterprompt"]  = read_docx(os.path.join(base, "Funcify masterprompt V10.docx"))
+    _cache["ingredient_db"] = read_xlsx(os.path.join(base, "Funcify. Master Ingredient 2.0.xlsx"))
+    _cache["engine_review"] = read_xlsx(os.path.join(base, "Funcify. Engine Review V4.xlsx"))
+    _cache["consumer_ui"]   = read_xlsx(os.path.join(base, "Funcify. Consumer UI.xlsx"))
+
+    return _cache
 
 
 # ─── Ingredient relevance filter ─────────────────────────────────────────────
@@ -89,7 +88,6 @@ def _ingredient_keywords(product_ingredients: list) -> set:
 
 
 def filter_ingredient_db(db_text: str, product_ingredients: list) -> str:
-    """Keep only db rows that mention at least one product ingredient keyword."""
     if not db_text or not product_ingredients:
         return db_text[:10000]
 
@@ -107,7 +105,6 @@ def filter_ingredient_db(db_text: str, product_ingredients: list) -> str:
             kept.append(line)
 
     result = "\n".join(kept)
-    # Fall back to full db if filtering removed everything meaningful
     return result if len(result) > 200 else db_text[:10000]
 
 
@@ -153,18 +150,14 @@ Beoordeling_tabel moet minimaal de volgende criteria bevatten (indien van toepas
 
 
 def build_messages(product_data: dict) -> tuple[str, str]:
-    masterprompt = load_masterprompt()
-    ingredient_db_raw = load_ingredient_db()
-    engine_review = load_engine_review()
-    consumer_ui = load_consumer_ui()
+    files = _get_files()
 
     product_ingredients = product_data.get("ingredients", [])
-    relevant_db = filter_ingredient_db(ingredient_db_raw, product_ingredients)
+    relevant_db = filter_ingredient_db(files["ingredient_db"], product_ingredients)
 
-    # System prompt: masterprompt + role instruction
     system_parts = []
-    if masterprompt:
-        system_parts.append(masterprompt[:20000])
+    if files["masterprompt"]:
+        system_parts.append(files["masterprompt"][:20000])
     system_parts.append(
         "Je bent de Funcify scoring engine. "
         "Je analyseert supplementproducten wetenschappelijk en geeft eerlijk advies aan consumenten. "
@@ -172,7 +165,6 @@ def build_messages(product_data: dict) -> tuple[str, str]:
     )
     system_prompt = "\n\n".join(system_parts)
 
-    # User message: databases + product + schema
     sections = []
 
     if relevant_db.strip():
@@ -181,16 +173,16 @@ def build_messages(product_data: dict) -> tuple[str, str]:
             + relevant_db[:12000]
         )
 
-    if engine_review.strip():
+    if files["engine_review"].strip():
         sections.append(
             "## SCORINGSCRITERIA EN GEWICHTEN (Engine Review V4)\n"
-            + engine_review[:6000]
+            + files["engine_review"][:6000]
         )
 
-    if consumer_ui.strip():
+    if files["consumer_ui"].strip():
         sections.append(
             "## KLACHTDEFINITIES EN CONSUMENTENCATEGORIEEN (Consumer UI)\n"
-            + consumer_ui[:4000]
+            + files["consumer_ui"][:4000]
         )
 
     sections.append(
@@ -200,8 +192,7 @@ def build_messages(product_data: dict) -> tuple[str, str]:
 
     sections.append("## GEVRAAGDE OUTPUT\n" + _OUTPUT_SCHEMA)
 
-    user_message = "\n\n".join(sections)
-    return system_prompt, user_message
+    return system_prompt, "\n\n".join(sections)
 
 
 # ─── Scoring logic ───────────────────────────────────────────────────────────
@@ -219,13 +210,11 @@ def score_product(product_data: dict) -> dict:
     )
 
     raw = response.content[0].text.strip()
-    # Strip markdown code fences if the model adds them despite the instruction
     raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
     raw = re.sub(r"\s*```\s*$", "", raw, flags=re.MULTILINE)
 
     result = json.loads(raw)
 
-    # Ensure score ↔ kwalificatie ↔ verdict are internally consistent
     score = int(result.get("score", 0))
     if score >= 85:
         result["kwalificatie"] = "Elite"
@@ -267,27 +256,9 @@ def score():
 
 @app.route("/health", methods=["GET"])
 def health():
-    files = {
-        "masterprompt":  os.path.exists(MASTERPROMPT_PATH),
-        "ingredient_db": os.path.exists(INGREDIENT_DB_PATH),
-        "engine_review": os.path.exists(ENGINE_REVIEW_PATH),
-        "consumer_ui":   os.path.exists(CONSUMER_UI_PATH),
-    }
-    docx_ok   = HAS_DOCX
-    xlsx_ok   = HAS_OPENPYXL
-    api_key   = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    all_ready = all(files.values()) and docx_ok and xlsx_ok and api_key
-
-    return jsonify({
-        "status":             "ok" if all_ready else "degraded",
-        "files":              files,
-        "python_docx":        docx_ok,
-        "openpyxl":           xlsx_ok,
-        "api_key_configured": api_key,
-    }), 200 if all_ready else 503
+    return jsonify({"status": "ok"}), 200
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
