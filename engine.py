@@ -10,6 +10,7 @@ import json
 import functools
 import anthropic
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 try:
     import docx as python_docx
@@ -24,6 +25,7 @@ except ImportError:
     HAS_OPENPYXL = False
 
 app = Flask(__name__)
+CORS(app, origins=["https://funcify.eu", "https://fullfunc.github.io"])
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
