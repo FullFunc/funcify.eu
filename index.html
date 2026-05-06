@@ -1384,6 +1384,7 @@
   <p>Funcify-beoordelingen zijn gebaseerd op publiek beschikbare productinformatie en onafhankelijke wetenschappelijke standaarden. De beoordelingen vormen geen medisch advies en zijn geen vervanging voor een consult met een arts of therapeut. Funcify beoordeelt productkwaliteit, niet individuele geschiktheid. Raadpleeg bij medicatiegebruik of een medische aandoening altijd een specialist. Voor persoonlijk advies is het Funcify-intakeprogramma beschikbaar.</p>
 </div>
 
+<script src="config.js"></script>
 <script>
 // ── FAQ TOGGLE ──
 function toggleFaq(btn) {
@@ -1428,61 +1429,90 @@ function startScan() {
   const steps = ['step1','step2','step3','step4','step5','step6'];
   let currentStep = 0;
 
-  // Animate steps
   function advanceStep() {
     if (currentStep > 0) {
       const prev = document.getElementById(steps[currentStep - 1]);
       prev.classList.remove('active-step');
       prev.classList.add('done');
-      prev.querySelector('.step-dot').textContent = '';
     }
     if (currentStep < steps.length) {
-      const curr = document.getElementById(steps[currentStep]);
-      curr.classList.add('active-step');
+      document.getElementById(steps[currentStep]).classList.add('active-step');
       currentStep++;
       return true;
     }
     return false;
   }
 
-  advanceStep();
-  const stepInterval = setInterval(() => {
-    if (!advanceStep()) clearInterval(stepInterval);
-  }, 3500);
+  function markStepsDone(upTo) {
+    for (let i = 0; i < upTo && i < steps.length; i++) {
+      const el = document.getElementById(steps[i]);
+      el.classList.remove('active-step');
+      el.classList.add('done');
+    }
+    currentStep = upTo;
+  }
 
-  // ── API CALL TO BACKEND ──
-  // Replace '/api/scan' with your actual Railway endpoint URL
-  fetch('/api/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: url })
-  })
-  .then(res => {
-    if (!res.ok) throw new Error('Server fout: ' + res.status);
-    return res.json();
-  })
-  .then(data => {
-    clearInterval(stepInterval);
+  function finishAllSteps() {
     steps.forEach(s => {
       const el = document.getElementById(s);
       el.classList.remove('active-step');
       el.classList.add('done');
     });
+  }
+
+  function resetLoading() {
+    loading.classList.remove('active');
+    btn.disabled = false;
+    btn.textContent = 'Analyseer (gratis) →';
+  }
+
+  advanceStep();
+  const stepInterval = setInterval(() => {
+    if (currentStep < 2 && !advanceStep()) clearInterval(stepInterval);
+  }, 3000);
+
+  // ── STAP 1: Scraper ──
+  fetch(FUNCIFY_CONFIG.scraperUrl + '/scrape', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: url })
+  })
+  .then(res => {
+    if (!res.ok) throw new Error('Scraper fout: ' + res.status);
+    return res.json();
+  })
+  .then(scraperData => {
+    clearInterval(stepInterval);
+    markStepsDone(2);
+
+    // ── STAP 2: Engine ──
+    const engineInterval = setInterval(() => {
+      if (!advanceStep()) clearInterval(engineInterval);
+    }, 3000);
+
+    return fetch(FUNCIFY_CONFIG.engineUrl + '/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scraperData)
+    })
+    .then(res => {
+      clearInterval(engineInterval);
+      if (!res.ok) throw new Error('Engine fout: ' + res.status);
+      return res.json();
+    });
+  })
+  .then(engineData => {
+    finishAllSteps();
     setTimeout(() => {
-      loading.classList.remove('active');
-      renderResult(data);
-      btn.disabled = false;
-      btn.textContent = 'Analyseer →';
-    }, 800);
+      resetLoading();
+      renderResult(engineData);
+    }, 600);
   })
   .catch(err => {
     clearInterval(stepInterval);
-    loading.classList.remove('active');
-    // ── DEMO MODE (remove when backend is live) ──
-    console.log('Backend niet beschikbaar, demo modus actief:', err.message);
+    console.warn('Backend niet bereikbaar, demo modus actief:', err.message);
+    resetLoading();
     renderDemoResult();
-    btn.disabled = false;
-    btn.textContent = 'Analyseer →';
   });
 }
 
@@ -1491,20 +1521,30 @@ document.getElementById('productUrl').addEventListener('keydown', e => {
   if (e.key === 'Enter') startScan();
 });
 
-// ── RENDER RESULT FROM API DATA ──
+// ── RENDER RESULT ──
+function appendHighlight(container, type, tekst) {
+  const div = document.createElement('div');
+  div.className = 'highlight-item';
+  div.innerHTML = `<span class="highlight-icon">${type === 'positief' ? '✓' : '⚠'}</span><span>${tekst}</span>`;
+  container.appendChild(div);
+}
+
 function renderResult(data) {
-  // Score styling
+  const score = data.score || 0;
+
+  // Score kleur
   const scoreEl = document.getElementById('res-score');
-  scoreEl.textContent = data.score;
+  scoreEl.textContent = score;
   scoreEl.className = 'score-number';
-  if (data.score >= 85) scoreEl.classList.add('elite');
-  else if (data.score >= 70) scoreEl.classList.add('good');
-  else if (data.score >= 50) scoreEl.classList.add('moderate');
+  if (score >= 85) scoreEl.classList.add('elite');
+  else if (score >= 70) scoreEl.classList.add('good');
+  else if (score >= 50) scoreEl.classList.add('moderate');
   else scoreEl.classList.add('poor');
 
   document.getElementById('res-brand').textContent = data.brand || 'Onbekend merk';
   document.getElementById('res-name').textContent = data.product_name || 'Onbekend product';
-  document.getElementById('res-intro').textContent = data.summary || '';
+  // consumer_summary (engine) of summary (demo fallback)
+  document.getElementById('res-intro').textContent = data.consumer_summary || data.summary || '';
   document.getElementById('res-kwalificatie').textContent = data.kwalificatie || '';
 
   const verdictEl = document.getElementById('res-verdict');
@@ -1516,53 +1556,52 @@ function renderResult(data) {
 
   document.getElementById('res-wat-doet').textContent = data.wat_doet || '';
 
-  // Score table
+  // Beoordeling tabel — oordeel vergelijking case-insensitief
   const table = document.getElementById('res-table');
   table.innerHTML = '';
-  if (data.beoordeling_tabel) {
-    data.beoordeling_tabel.forEach(row => {
-      const tr = document.createElement('tr');
-      const cls = row.oordeel === 'GOED' ? 'oordeel-goed'
-                : row.oordeel === 'MATIG' ? 'oordeel-matig'
-                : row.oordeel === 'SLECHT' ? 'oordeel-slecht'
-                : 'oordeel-ontbreekt';
-      tr.innerHTML = `<td>${row.criterium}</td><td>${row.bevinding}</td><td class="${cls}">${row.oordeel}</td>`;
-      table.appendChild(tr);
-    });
-  }
+  (data.beoordeling_tabel || []).forEach(row => {
+    const oordeel = (row.oordeel || '').toUpperCase();
+    const cls = oordeel === 'GOED'    ? 'oordeel-goed'
+              : oordeel === 'MATIG'   ? 'oordeel-matig'
+              : oordeel === 'SLECHT'  ? 'oordeel-slecht'
+              : 'oordeel-ontbreekt';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${row.criterium}</td><td>${row.bevinding}</td><td class="${cls}">${row.oordeel}</td>`;
+    table.appendChild(tr);
+  });
 
-  // Highlights
+  // Highlights — engine geeft {positief:[], negatief:[]}, demo geeft [{type,tekst}]
   const hl = document.getElementById('res-highlights');
   hl.innerHTML = '';
-  if (data.highlights) {
-    data.highlights.forEach(h => {
-      const div = document.createElement('div');
-      div.className = 'highlight-item';
-      div.innerHTML = `<span class="highlight-icon">${h.type === 'positief' ? '✓' : '⚠'}</span><span>${h.tekst}</span>`;
-      hl.appendChild(div);
-    });
+  const h = data.highlights;
+  if (h) {
+    if (Array.isArray(h)) {
+      h.forEach(item => appendHighlight(hl, item.type, item.tekst));
+    } else {
+      (h.positief || []).forEach(tekst => appendHighlight(hl, 'positief', tekst));
+      (h.negatief || []).forEach(tekst => appendHighlight(hl, 'negatief', tekst));
+    }
   }
 
-  // Flags
+  // Context flags — engine geeft strings, demo geeft objecten
   const flagsSection = document.getElementById('res-flags-section');
   const flagsList = document.getElementById('res-flags');
   flagsList.innerHTML = '';
-  if (data.context_flags && data.context_flags.length > 0) {
+  const flags = data.context_flags || [];
+  if (flags.length > 0) {
     flagsSection.style.display = 'block';
-    data.context_flags.forEach(f => {
+    flags.forEach(f => {
       const div = document.createElement('div');
-      div.className = 'flag-item' + (f.severity === 'Critical' ? ' critical' : '');
-      div.textContent = f.bericht;
+      div.className = 'flag-item';
+      div.textContent = typeof f === 'string' ? f : (f.bericht || '');
       flagsList.appendChild(div);
     });
   } else {
     flagsSection.style.display = 'none';
   }
 
-  // Conditional sections
-  const score = data.score || 0;
-  const hasCriticalGate = data.critical_gate || false;
-  if (score < 70 || hasCriticalGate) {
+  // Conditionele secties
+  if (score < 70 || data.critical_gate) {
     document.getElementById('res-beter-section').style.display = 'block';
     document.getElementById('res-voor-wie-section').style.display = 'block';
     document.getElementById('res-beter').textContent = data.wat_zou_beter || '';
@@ -1576,33 +1615,36 @@ function renderResult(data) {
   document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// ── DEMO RESULT (shown when backend is not yet connected) ──
+// ── DEMO RESULT ──
 function renderDemoResult() {
-  const demoData = {
+  renderResult({
     brand: 'DEMO — Backend nog niet gekoppeld',
     product_name: 'Voorbeeld Magnesium Bisglycinate 400mg',
     score: 71,
-    kwalificatie: 'DEGELIJK',
+    kwalificatie: 'Degelijk',
     verdict: 'Koopwaardig',
-    summary: 'Dit is een voorbeeldbeoordeling. De backend engine is nog niet gekoppeld. Zodra Railway en de Python wrapper actief zijn, verschijnt hier de echte beoordeling op basis van de ingevoerde URL.',
-    wat_doet: 'Magnesium ondersteunt meer dan 300 enzymatische processen in het lichaam. Het speelt een centrale rol bij energieproductie, spierfunctie, zenuwgeleiding en slaapkwaliteit. Bisglycinate is een chelaatvorm die beter wordt opgenomen dan oxide of carbonate vormen.',
+    consumer_summary: 'Dit is een voorbeeldbeoordeling. Vul in config.js de Railway URLs in om echte analyses te starten.',
+    wat_doet: 'Magnesium ondersteunt meer dan 300 enzymatische processen in het lichaam. Het speelt een centrale rol bij energieproductie, spierfunctie, zenuwgeleiding en slaapkwaliteit. Bisglycinate is een chelaatvorm die beter wordt opgenomen dan oxide of carbonaat.',
     beoordeling_tabel: [
-      { criterium: 'Welke vorm krijg je?', bevinding: 'Bisglycinate — hoogwaardige chelaatvorm met goede opname', oordeel: 'GOED' },
-      { criterium: 'Krijg je genoeg per dag?', bevinding: 'Dosering valt binnen klinisch relevante range', oordeel: 'GOED' },
-      { criterium: 'Is alles duidelijk vermeld?', bevinding: 'Label volledig, doseringen helder', oordeel: 'GOED' },
-      { criterium: 'Is het veilig getest?', bevinding: 'COA niet publiek beschikbaar', oordeel: 'ONTBREEKT' },
-      { criterium: 'Onafhankelijk gecontroleerd?', bevinding: 'Geen derde partij verificatie gevonden', oordeel: 'ONTBREEKT' },
-      { criterium: 'Kloppen de ingrediënten samen?', bevinding: 'Geen antagonistische combinaties', oordeel: 'GOED' },
+      { criterium: 'Moleculaire vorm', bevinding: 'Bisglycinate — hoogwaardige chelaatvorm', oordeel: 'Goed' },
+      { criterium: 'Dosering', bevinding: 'Valt binnen klinisch relevante range', oordeel: 'Goed' },
+      { criterium: 'Transparantie label', bevinding: 'Label volledig, doseringen helder', oordeel: 'Goed' },
+      { criterium: 'Certificering', bevinding: 'COA niet publiek beschikbaar', oordeel: 'Onbekend' },
+      { criterium: 'Derde partij test', bevinding: 'Geen verificatie gevonden', oordeel: 'Onbekend' },
+      { criterium: 'Ingrediëntcombinaties', bevinding: 'Geen antagonistische combinaties', oordeel: 'Goed' },
     ],
-    highlights: [
-      { type: 'positief', tekst: 'Bisglycinate is een van de best opneembare magnesiumvormen — goede keuze voor slaap en spierherstel.' },
-      { type: 'positief', tekst: 'Dosering valt binnen de klinisch effectieve range voor magnesiumsuppletie.' },
-      { type: 'negatief', tekst: 'Geen publiek beschikbare COA gevonden. Productkwaliteit niet onafhankelijk verifieerbaar.' },
-    ],
+    highlights: {
+      positief: [
+        'Bisglycinate is een van de best opneembare magnesiumvormen — goede keuze voor slaap en spierherstel.',
+        'Dosering valt binnen de klinisch effectieve range voor magnesiumsuppletie.'
+      ],
+      negatief: [
+        'Geen publiek beschikbare COA gevonden. Productkwaliteit niet onafhankelijk verifieerbaar.'
+      ]
+    },
     context_flags: [],
     critical_gate: false
-  };
-  renderResult(demoData);
+  });
 }
 </script>
 </body>
