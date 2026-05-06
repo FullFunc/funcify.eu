@@ -4,9 +4,11 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import anthropic
 
 app = Flask(__name__)
+CORS(app, origins=["https://funcify.eu", "https://fullfunc.github.io"])
 
 HEADERS = {
     "User-Agent": (
