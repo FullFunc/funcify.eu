@@ -198,7 +198,7 @@ Geef terug als JSON:
   "price_per_serving": "berekend indien mogelijk"
 }}"""
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5",
         max_tokens=4000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
@@ -302,7 +302,7 @@ Genereer JSON:
   "consumer_summary": "2-3 zinnen samenvatting"
 }}"""
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5",
         max_tokens=3000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
@@ -389,7 +389,7 @@ Pagina tekst: {page_text[:3000] if page_text else 'Niet beschikbaar'}
 
 Geef terug als JSON:
 {{"product_name": "naam", "brand_name": "merk", "ingredients": [{{"name": "naam", "amount": 0, "unit": "mg", "form": "vorm"}}], "serving_size": "serving", "package_size": "verpakkingsgrootte", "price": "prijs", "health_claims": ["claim"], "certifications": ["cert"], "additional_info": "info"}}"""
-    response = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=1500, messages=[{"role": "user", "content": prompt}])
+    response = client.messages.create(model="claude-sonnet-4-5", max_tokens=1500, messages=[{"role": "user", "content": prompt}])
     raw = response.content[0].text.strip()
     raw = re.sub(r"```json\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
