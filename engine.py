@@ -236,14 +236,11 @@ def score_product(product_data: dict) -> dict:
 
 @app.route("/score", methods=["POST"])
 def score():
-    body = request.get_json(force=True, silent=True)
-    if not body:
-        return jsonify({"error": "Ongeldige of lege JSON body"}), 400
-    if not body.get("product_name") and not body.get("ingredients"):
-        return jsonify({"error": "Body moet minimaal 'product_name' of 'ingredients' bevatten"}), 400
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "") or data.get("product_url", "") or ""
 
     try:
-        result = score_product(body)
+        result = score_product(data)
         return jsonify(result)
     except json.JSONDecodeError as e:
         return jsonify({"error": f"AI retourneerde ongeldige JSON: {e}"}), 500
