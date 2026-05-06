@@ -36,7 +36,10 @@ HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Referer": "https://www.google.com/",
 }
 
 INGREDIENT_PATTERN = re.compile(
@@ -411,16 +414,21 @@ def scrape():
 
     url = body["url"]
 
+    soup = None
     try:
         _, soup = fetch_html(url)
-    except requests.RequestException as e:
-        return jsonify({"error": f"Failed to fetch URL: {e}"}), 502
+    except (requests.RequestException, requests.exceptions.Timeout) as e:
+        app.logger.warning("Fetch failed for %s: %s — falling back to Anthropic", url, e)
 
-    data = scrape_product(soup)
+    if soup is not None:
+        data = scrape_product(soup)
+        page_text = soup.get_text(" ", strip=True)
+    else:
+        data = {}
+        page_text = ""
 
     if not is_sufficient(data):
         try:
-            page_text = soup.get_text(" ", strip=True)
             data = anthropic_fallback(page_text)
             data["_source"] = "anthropic_fallback"
         except Exception as e:
