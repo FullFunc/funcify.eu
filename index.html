@@ -1468,24 +1468,44 @@ function startScan() {
 
   advanceStep();
   const stepInterval = setInterval(() => {
-    if (!advanceStep()) clearInterval(stepInterval);
+    if (currentStep < 2 && !advanceStep()) clearInterval(stepInterval);
   }, 3000);
 
-  fetch(FUNCIFY_CONFIG.engineUrl + '/score', {
+  // ── STAP 1: Scraper ──
+  fetch(FUNCIFY_CONFIG.scraperUrl + '/scrape', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: url, product_url: url })
+    body: JSON.stringify({ url: url })
   })
   .then(res => {
-    if (!res.ok) throw new Error('Engine fout: ' + res.status);
+    if (!res.ok) throw new Error('Scraper fout: ' + res.status);
     return res.json();
   })
-  .then(data => {
+  .then(scraperData => {
     clearInterval(stepInterval);
+    markStepsDone(2);
+
+    // ── STAP 2: Engine ──
+    const engineInterval = setInterval(() => {
+      if (!advanceStep()) clearInterval(engineInterval);
+    }, 3000);
+
+    return fetch(FUNCIFY_CONFIG.engineUrl + '/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scraperData)
+    })
+    .then(res => {
+      clearInterval(engineInterval);
+      if (!res.ok) throw new Error('Engine fout: ' + res.status);
+      return res.json();
+    });
+  })
+  .then(engineData => {
     finishAllSteps();
     setTimeout(() => {
       resetLoading();
-      renderResult(data);
+      renderResult(engineData);
     }, 600);
   })
   .catch(err => {
