@@ -126,6 +126,25 @@ def extract_text_blocks(soup: BeautifulSoup, *selectors) -> list[str]:
     return blocks
 
 
+# Known fillers/additives — matched case-insensitively against ingredient names
+FILLER_KEYWORDS = {
+    "magnesium stearate", "stearic acid", "silicon dioxide", "silica",
+    "microcrystalline cellulose", "mcc", "cellulose", "hydroxypropyl methylcellulose",
+    "hpmc", "gelatin", "gelatine", "dicalcium phosphate", "calcium carbonate",
+    "maltodextrin", "rice flour", "rice bran", "talc", "titanium dioxide",
+    "carrageenan", "carboxymethyl cellulose", "croscarmellose", "povidone",
+    "polyethylene glycol", "peg", "polysorbate", "sodium lauryl sulfate", "sls",
+    "artificial flavour", "artificial color", "artificial colour",
+    "natural flavour", "natural flavor", "sucralose", "acesulfame",
+    "aspartame", "sorbitol", "mannitol", "xylitol",
+}
+
+
+def _is_filler(name: str) -> bool:
+    name_lower = name.lower().strip()
+    return any(kw in name_lower for kw in FILLER_KEYWORDS)
+
+
 def parse_ingredients_from_text(text: str) -> list[dict]:
     ingredients = []
     lines = [l.strip() for l in re.split(r"[\n;,]", text) if l.strip()]
@@ -145,7 +164,12 @@ def parse_ingredients_from_text(text: str) -> list[dict]:
             name = re.sub(r"\s*\([^)]*\)", "", name).strip()
 
         if name:
-            ingredients.append({"name": name, "dosage": dosage, "molecular_form": form})
+            ingredients.append({
+                "name": name,
+                "dosage": dosage,
+                "molecular_form": form,
+                "type": "vul-additief" if _is_filler(name) else "actief",
+            })
     return ingredients
 
 
@@ -157,6 +181,8 @@ def scrape_product(soup: BeautifulSoup) -> dict:
         "ingredients": [],
         "health_claims": [],
         "certifications": [],
+        "pricing": {},
+        "certification_urls": [],
     }
 
     for sel in ["h1", '[class*="product-title"]', '[class*="product-name"]', '[itemprop="name"]']:
@@ -217,6 +243,47 @@ def scrape_product(soup: BeautifulSoup) -> dict:
             label = keyword.replace(".", "-").title()
             if label not in result["certifications"]:
                 result["certifications"].append(label)
+
+    # --- Pricing ---
+    price_match = re.search(
+        r"(?:€|EUR|USD|\$|£)\s*(\d[\d.,]+)|\b(\d[\d.,]+)\s*(?:€|EUR)",
+        full_text, re.IGNORECASE
+    )
+    if price_match:
+        result["pricing"]["price"] = (price_match.group(1) or price_match.group(2)).strip()
+
+    capsule_match = re.search(
+        r"(\d+)\s*(?:capsules?|caps?|tablets?|tabs?|softgels?|vegcaps?|vcaps?)",
+        full_text, re.IGNORECASE
+    )
+    if capsule_match:
+        result["pricing"]["units"] = capsule_match.group(1)
+        result["pricing"]["unit_type"] = capsule_match.group(0).replace(capsule_match.group(1), "").strip()
+
+    content_match = re.search(
+        r"(\d[\d.,]*)\s*(g|gram|ml|mg)\b(?!\s*per)",
+        full_text, re.IGNORECASE
+    )
+    if content_match:
+        result["pricing"]["content"] = content_match.group(1) + " " + content_match.group(2)
+
+    # --- Certification and document URLs ---
+    doc_patterns = re.compile(
+        r"https?://[^\s\"'>]+(?:coa|certificate|lab.?report|analysis|specification|sds|tds|datasheet)[^\s\"'>]*",
+        re.IGNORECASE
+    )
+    for match in doc_patterns.finditer(str(soup)):
+        url_found = match.group(0).rstrip(".,)")
+        if url_found not in result["certification_urls"]:
+            result["certification_urls"].append(url_found)
+
+    # Also collect href links from cert-related anchor text
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        anchor_text = a.get_text(strip=True).lower()
+        if any(kw in anchor_text for kw in ["certificate", "coa", "lab report", "tested", "verified", "analysis"]):
+            if href.startswith("http") and href not in result["certification_urls"]:
+                result["certification_urls"].append(href)
 
     return result
 
