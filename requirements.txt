@@ -6,3 +6,4 @@ anthropic
 gunicorn
 python-docx
 openpyxl
+playwright

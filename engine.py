@@ -104,6 +104,18 @@ def fetch_html(url: str) -> tuple[str, BeautifulSoup]:
     return resp.text, soup
 
 
+def fetch_html_playwright(url: str) -> tuple[str, BeautifulSoup]:
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(user_agent=HEADERS["User-Agent"])
+        page.goto(url, timeout=20000, wait_until="domcontentloaded")
+        html = page.content()
+        browser.close()
+    soup = BeautifulSoup(html, "html.parser")
+    return html, soup
+
+
 def extract_text_blocks(soup: BeautifulSoup, *selectors) -> list[str]:
     blocks = []
     for sel in selectors:
@@ -442,14 +454,34 @@ def scrape():
         page_text = ""
 
     if not is_sufficient(data):
+        # Fallback 1: Anthropic op beschikbare paginatekst
         try:
             data = anthropic_fallback(page_text)
             data["_source"] = "anthropic_fallback"
         except Exception as e:
             data["_fallback_error"] = str(e)
             data["_source"] = "scraper_partial"
+
+    # Fallback 2: Playwright als er nog steeds geen ingrediënten zijn
+    if not data.get("ingredients"):
+        try:
+            app.logger.info("No ingredients yet — trying Playwright for %s", url)
+            _, pw_soup = fetch_html_playwright(url)
+            pw_data = scrape_product(pw_soup)
+            if is_sufficient(pw_data):
+                pw_data["_source"] = "playwright"
+                return jsonify(pw_data)
+            # Geef Playwright-paginatekst aan Anthropic als ook scraping onvoldoende is
+            pw_text = pw_soup.get_text(" ", strip=True)
+            pw_data = anthropic_fallback(pw_text)
+            pw_data["_source"] = "playwright_anthropic_fallback"
+            return jsonify(pw_data)
+        except Exception as e:
+            app.logger.warning("Playwright fallback failed for %s: %s", url, e)
+            data.setdefault("_source", "scraper_partial")
     else:
-        data["_source"] = "scraper"
+        if "_source" not in data:
+            data["_source"] = "scraper"
 
     return jsonify(data)
 
