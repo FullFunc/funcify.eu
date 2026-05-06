@@ -301,7 +301,7 @@ Geef UITSLUITEND de volgende JSON terug — geen markdown-omhulsel, geen uitleg:
     {
       "criterium": "string",
       "bevinding": "string",
-      "oordeel": "Goed" | "Matig" | "Slecht" | "Onbekend"
+      "oordeel": "Goed" | "Matig" | "Slecht" | "DATA_LACUNE"
     }
   ],
   "highlights": {
@@ -314,15 +314,29 @@ Geef UITSLUITEND de volgende JSON terug — geen markdown-omhulsel, geen uitleg:
   "consumer_summary": "string — volledige aankoopadviessamenvatting in B1-taalniveau"
 }
 
+REGEL 1 — ONTBREKENDE DATA:
+Ontbrekende data is NOOIT negatief. Als informatie niet beschikbaar is op het label of de website, gebruik dan DATA_LACUNE als beoordeling met score neutraal. Alleen bewezen slechte kwaliteit (ethylester, oxide vorm, proprietary blend, bewezen contaminatie) telt als negatief.
+
+REGEL 2 — GEEN EXTERNE INTERPRETATIE:
+Schrijf NOOIT zinnen met "studies tonen", "literatuur zegt", "klinisch bewezen", "onderzoek wijst uit". Baseer alle conclusies alleen op wat letterlijk op het label of de productpagina staat, aangevuld met jouw ingrediëntendatabase.
+
+REGEL 3 — VASTE OUTPUTSTRUCTUUR BEOORDELINGSTABEL:
+De beoordeling_tabel bevat altijd exact deze acht rijen in deze volgorde, met exact deze namen:
+  1. Moleculaire vormen
+  2. Doseringen
+  3. Bioavailabiliteit
+  4. Transparantie label
+  5. Certificeringen
+  6. Gezondheidsclaims
+  7. Serving size
+  8. Vulstoffen en additieven
+Geen extra rijen. Geen andere namen. Altijd alle acht, altijd in deze volgorde.
+
 Scoringsgrenzen:
   Elite    85-100  → Koopwaardig
   Degelijk 65-84   → Koopwaardig
   Matig    45-64   → Alleen met context
-  Afkeur   0-44    → Af te raden
-
-Beoordeling_tabel moet minimaal de volgende criteria bevatten (indien van toepassing):
-  Bioavailabiliteit, Doseringen, Moleculaire vormen, Certificeringen,
-  Transparantie label, Gezondheidsclaims, Serving size, Vulstoffen/additieven.\
+  Afkeur   0-44    → Af te raden\
 """
 
 
