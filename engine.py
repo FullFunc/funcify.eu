@@ -18,6 +18,7 @@ CORS(app, origins=["https://funcify.eu", "https://fullfunc.github.io"])
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _cache = {}
+CLAUDE_MODEL = "claude-sonnet-4-5"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -567,7 +568,7 @@ Geef terug als JSON:
   "price_per_serving": "berekend indien mogelijk"
 }}"""
     response = client.messages.create(
-        model="claude-sonnet-4-5",
+        model=CLAUDE_MODEL,
         max_tokens=4000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
@@ -640,22 +641,6 @@ def determine_verdict(score_pct, critical_fail):
 
 def generate_consumer_output(product_data, evaluations_data, criteria, score_100, kwalificatie, verdict, product_type, critical_fail, context_flags_triggered=None):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    strengths = evaluations_data.get("key_strengths", [])
-    weaknesses = evaluations_data.get("key_weaknesses", [])
-    additives = evaluations_data.get("additives_found", [])
-    inferior_forms = evaluations_data.get("inferior_forms_found", [])
-    price_per_serving = evaluations_data.get("price_per_serving", "")
-    ingredients_text = "\n".join([
-        f"- {ing.get('name', '')}: {ing.get('amount', '')} {ing.get('unit', '')} ({ing.get('form', '')})"
-        for ing in product_data.get("ingredients", [])
-    ])
-    excipients_text = "\n".join([
-        f"- {e.get('name', '')}"
-        for e in product_data.get("excipients", [])
-    ]) or "Geen vulstoffen geidentificeerd."
-    usage_instructions_text = product_data.get("usage_instructions", "") or ""
-    flags_text = "\n".join(context_flags_triggered or []) or "Geen"
-    certifications_text = ", ".join(product_data.get("certifications", [])) or "Geen certificeringen gevonden op de pagina."
     system_prompt = """Je bent de Funcify beoordelingsengine voor Nederlandse consumenten. Je schrijft eerlijke, onderbouwde beoordelingen op basis van de productdata die je ontvangt.
 
 ABSOLUTE REGELS:
@@ -696,7 +681,7 @@ INGREDIENTEN (voor Moleculaire vormen, Doseringen, Bioavailabiliteit):
 {chr(10).join([f"- {ing.get('name','')}: {ing.get('amount','')} {ing.get('unit','')} (vorm: {ing.get('form','niet vermeld')})" for ing in product_data.get('ingredients', [])]) or 'Geen ingredienten gevonden'}
 
 VULSTOFFEN (gebruik ALLEEN voor Vulstoffen rij, geen aannames):
-{chr(10).join([f"- {e}" for e in product_data.get('excipients', [])]) or 'Geen vulstoffen geidentificeerd'}
+{chr(10).join([f"- {e.get('name', e) if isinstance(e, dict) else e}" for e in product_data.get('excipients', [])]) or 'Geen vulstoffen geidentificeerd'}
 
 GEBRUIKSINSTRUCTIES: {product_data.get('usage_instructions', 'Niet gevonden')}
 
@@ -743,7 +728,7 @@ Genereer valide JSON:
   "consumer_summary": "2-3 zinnen samenvatting"
 }}"""
     response = client.messages.create(
-        model="claude-sonnet-4-5",
+        model=CLAUDE_MODEL,
         max_tokens=3000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
@@ -1017,18 +1002,26 @@ def is_sufficient(data):
 
 def anthropic_fallback(url, page_text=""):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    page_sample = page_text[:2000] if page_text else "Niet beschikbaar"
+    page_sample = page_text[:4000] if page_text else "Niet beschikbaar"
+    system_prompt = """Je extraheert productinformatie van supplement-pagina's.
+
+ABSOLUTE REGELS:
+1. Schrijf ALLEEN informatie die letterlijk op de pagina staat. Verzin NOOIT iets.
+2. Als een waarde niet op de pagina staat: geef null of lege string terug.
+3. Verzin NOOIT hoeveelheden, vormen of ingrediënten die niet expliciet vermeld worden.
+4. Certificeringen: alleen vermelden als expliciet benoemd op de pagina (logo, tekst, badge).
+5. Ingredients amount: geef null als de hoeveelheid niet letterlijk op de pagina staat.
+6. Geef alleen valide JSON terug zonder markdown."""
     prompt = f"""Analyseer deze supplementpagina en extraheer productinformatie.
 URL: {url}
-Pagina tekst: {page_sample}
-
-Identificeer ALLE certificeringen die op de pagina staan vermeld, inclusief certificeringen die niet in standaard lijsten voorkomen maar wel expliciet worden genoemd.
+Paginatekst: {page_sample}
 
 Geef terug als JSON:
-{{"product_name": "naam", "brand_name": "merk", "ingredients": [{{"name": "naam", "amount": 0, "unit": "mg", "form": "vorm"}}], "serving_size": "serving", "usage_instructions": "instructies", "package_size": "verpakkingsgrootte", "price": "prijs", "health_claims": ["claim"], "certifications": ["cert"], "warnings": ["waarschuwing"], "additional_info": "info"}}"""
+{{"product_name": "naam", "brand_name": "merk", "ingredients": [{{"name": "naam", "amount": null, "unit": "mg", "form": "vorm of null"}}], "excipients": [{{"name": "naam", "amount": null, "unit": "", "form": "", "type": "vul-additief", "nested": false}}], "serving_size": "serving", "usage_instructions": "instructies", "package_size": "verpakkingsgrootte", "price": "prijs", "health_claims": ["claim"], "certifications": ["cert"], "warnings": ["waarschuwing"], "additional_info": ""}}"""
     response = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1500,
+        model=CLAUDE_MODEL,
+        max_tokens=2000,
+        system=system_prompt,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = response.content[0].text.strip()
@@ -1036,8 +1029,10 @@ Geef terug als JSON:
     raw = re.sub(r"```\s*", "", raw)
     try:
         result = json.loads(raw)
-        ingredients = result.get("ingredients", [])
-        active, excipients = _split_active_excipients(ingredients)
+        # Combine ingredients + separately-returned excipients, then split
+        all_ingredients = result.get("ingredients", []) + result.get("excipients", [])
+        active, excipients = _split_active_excipients(all_ingredients)
+        result["ingredients"] = all_ingredients
         result["active_ingredients"] = active
         result["excipients"] = excipients
         return result
@@ -1052,7 +1047,13 @@ Geef terug als JSON:
 def extract_with_claude(url, raw_text, product_data):
     """Second-pass Claude extraction when health_claims are missing or certifications < 2."""
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    prompt = f"""Analyseer de onderstaande paginatekst van een supplementproduct en extraheer de volgende informatie zo volledig mogelijk.
+    extract_system = """Je extraheert ontbrekende velden van supplement-pagina's. Strikte regels:
+1. Schrijf ALLEEN wat letterlijk op de pagina staat. Verzin NOOIT iets.
+2. Amounts: geef null als niet letterlijk vermeld. Nooit schatten.
+3. Certifications: alleen als expliciet benoemd (logo, badge, tekst). Geen marketing-claims als certificering.
+4. Ingredients: gebruik exacte namen en hoeveelheden van de pagina.
+5. Geef alleen valide JSON terug zonder markdown."""
+    prompt = f"""Extraheer ontbrekende velden van deze supplementpagina.
 
 URL: {url}
 Paginatekst (eerste 6000 tekens):
@@ -1062,21 +1063,22 @@ Geef terug als JSON met ALLEEN deze velden:
 {{
   "health_claims": ["volledige gezondheidsclaim 1", "claim 2"],
   "certifications": ["certificering 1", "certificering 2"],
-  "ingredients": [{{"name": "naam", "amount": 0, "unit": "mg", "form": "vorm"}}],
+  "ingredients": [{{"name": "naam", "amount": null, "unit": "mg", "form": "vorm of null"}}],
   "package_size": "getal + eenheid bv 120 capsules",
   "usage_instructions": "innameadvies letterlijk van de pagina"
 }}
 
 Regels:
-- health_claims: alle claims die iets beweren over gezondheid, werking of doel van het product
-- certifications: alle keurmerken, kwaliteitslogo's en certificeringen die expliciet worden vermeld
-- ingredients: volledige ingrediëntenlijst met naam, hoeveelheid en eenheid
+- health_claims: alleen claims die iets beweren over gezondheid, werking of doel van het product
+- certifications: alleen keurmerken die expliciet worden vermeld als certificering (geen marketing)
+- ingredients: volledige ingrediëntenlijst met naam, hoeveelheid en eenheid — null als hoeveelheid niet vermeld
 - package_size: het totale aantal capsules/tabletten/softgels in de verpakking als getal + eenheid
 - usage_instructions: de letterlijke innametekst van de pagina, of leeg als niet gevonden"""
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5",
+            model=CLAUDE_MODEL,
             max_tokens=2000,
+            system=extract_system,
             messages=[{"role": "user", "content": prompt}]
         )
         raw = response.content[0].text.strip()
@@ -1096,12 +1098,28 @@ Regels:
                 product_data.setdefault("certifications", []).append(cert)
                 existing.add(cert.lower())
     if extracted.get("ingredients"):
-        if not product_data.get("ingredients"):
+        existing_ingredients = product_data.get("ingredients", [])
+        if not existing_ingredients:
+            # No existing ingredients — use Claude extraction directly
             ingredients = extracted["ingredients"]
             active, excipients = _split_active_excipients(ingredients)
             product_data["ingredients"] = ingredients
             product_data["active_ingredients"] = active
             product_data["excipients"] = excipients
+        else:
+            # Existing ingredients — merge: add Claude ingredients not already seen
+            seen = set(i.get("name", "").lower() for i in existing_ingredients)
+            added = False
+            for ing in extracted["ingredients"]:
+                if ing.get("name", "").lower() not in seen:
+                    existing_ingredients.append(ing)
+                    seen.add(ing.get("name", "").lower())
+                    added = True
+            if added:
+                active, excipients = _split_active_excipients(existing_ingredients)
+                product_data["ingredients"] = existing_ingredients
+                product_data["active_ingredients"] = active
+                product_data["excipients"] = excipients
     if extracted.get("package_size") and not product_data.get("package_size"):
         product_data["package_size"] = extracted["package_size"]
     if extracted.get("usage_instructions") and not product_data.get("usage_instructions"):
