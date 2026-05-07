@@ -1382,16 +1382,6 @@ def score():
         active_ingredients = product_data.get("active_ingredients", ingredients)
         context_flags_triggered = evaluate_context_flags(active_ingredients)
         context_flags_triggered += evaluate_cofactor_checks(active_ingredients)
-        if product_type == "OMEGA3":
-            sus_keywords = ["msc", "friend of the sea", "dolphin safe", "marine stewardship"]
-            certs = product_data.get("certifications", [])
-            has_sus = any(any(sk in c.lower() for sk in sus_keywords) for c in certs)
-            if not has_sus:
-                context_flags_triggered.append({
-                    "id": "SUS001",
-                    "severity": "Major",
-                    "message": "Geen duurzaamheidscertificering gevonden voor dit visolieproduct. Herkomst en vangstmethode zijn onbekend."
-                })
         product_data["context_flags_triggered"] = context_flags_triggered
 
         # Intake advice
@@ -1458,6 +1448,7 @@ def score():
             "price_per_day": price_per_day,
             "price_per_gram": price_per_gram,
             "intake_advice": intake_advice,
+            "context_flags": context_flags_triggered,
             "context_flags_triggered": context_flags_triggered,
             "quality_certs": [c for c in product_data.get("certifications", []) if any(q in c.lower() for q in QUALITY_CERT_LIST)],
             "sustainability_certs": [c for c in product_data.get("certifications", []) if any(s in c.lower() for s in SUSTAINABILITY_CERT_LIST)],
