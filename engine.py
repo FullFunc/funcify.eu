@@ -1369,7 +1369,7 @@ def scrape():
 def score():
     product_data = request.get_json(silent=True) or {}
 
-    # Verdedigingslaag: normaliseer alle velden zodat de engine nooit crasht op None of verkeerde types
+    # Verdedigingslaag
     product_data["product_name"] = str(product_data.get("product_name") or "Onbekend")
     product_data["brand_name"] = str(product_data.get("brand_name") or "Onbekend")
     product_data["ingredients"] = product_data.get("ingredients") or []
@@ -1383,106 +1383,157 @@ def score():
     product_data["price"] = str(product_data.get("price") or "")
     product_data["additional_info"] = str(product_data.get("additional_info") or "")
     product_data["warnings"] = product_data.get("warnings") or []
-
-    # Normaliseer elk ingredient zodat er geen None velden zijn
+    product_data["problem_ids"] = product_data.get("problem_ids") or []
     for ing in product_data["ingredients"]:
         ing["name"] = str(ing.get("name") or "")
         ing["form"] = str(ing.get("form") or "")
         ing["unit"] = str(ing.get("unit") or "")
         ing["type"] = str(ing.get("type") or "actief")
+        if ing.get("amount") is not None:
+            try:
+                ing["amount"] = float(ing["amount"])
+            except (ValueError, TypeError):
+                ing["amount"] = None
 
+    url = str(product_data.get("url") or "")
+    product_data["url"] = url
+
+    # Stap 1: producttype detecteren
     try:
-        url = product_data.get("url", "")
-        product_data["url"] = url
-        problem_ids = product_data.get("problem_ids", [])
-        product_data["problem_ids"] = problem_ids
-        criteria = load_engine_criteria()
         product_type = detect_product_type(product_data)
-        ingredients = product_data.get("ingredients", [])
+    except Exception as e:
+        print(f"STAP1 ERROR: {e}", flush=True)
+        product_type = "DEFAULT"
 
-        # Sustainability check for omega-3: voeg toe als context flag, niet als nep-certificering
-        active_ingredients = product_data.get("active_ingredients", ingredients)
-        context_flags_triggered = evaluate_context_flags(active_ingredients)
-        context_flags_triggered += evaluate_cofactor_checks(active_ingredients)
-        product_data["context_flags_triggered"] = context_flags_triggered
-
-        # Intake advice
-        intake_advice = get_intake_advice(product_data)
-
-        # Complexity tier
-        active_count = len(product_data.get("active_ingredients", ingredients))
+    # Stap 2: complexiteit en prijs
+    try:
+        active_count = len(product_data.get("active_ingredients") or product_data.get("ingredients") or [])
         if active_count <= 2:
             product_complexity_tier = "Single"
         elif active_count <= 6:
             product_complexity_tier = "Multi"
         else:
             product_complexity_tier = "Complex"
+        price_per_day = calculate_price_per_day(
+            product_data.get("price", ""),
+            product_data.get("package_size", ""),
+            product_data.get("serving_size", ""),
+            product_data.get("usage_instructions", "")
+        )
+        price_per_gram = calculate_price_per_gram(
+            product_data.get("price", ""),
+            product_data.get("ingredients", []),
+            product_data.get("package_size", ""),
+            product_data.get("serving_size", "")
+        )
+        intake_advice = get_intake_advice(product_data)
+    except Exception as e:
+        print(f"STAP2 ERROR: {e}", flush=True)
+        product_complexity_tier = "Single"
+        price_per_day = ""
+        price_per_gram = ""
+        intake_advice = ""
 
-        # Price calculations
-        price_str = product_data.get("price", "")
-        package_size_str = product_data.get("package_size", "")
-        serving_size_str = product_data.get("serving_size", "")
-        price_per_day = calculate_price_per_day(price_str, package_size_str, serving_size_str, product_data.get("usage_instructions", ""))
-        price_per_gram = calculate_price_per_gram(price_str, ingredients, package_size_str, serving_size_str)
+    # Stap 3: context flags
+    try:
+        active_ingredients = product_data.get("active_ingredients") or product_data.get("ingredients") or []
+        context_flags_triggered = evaluate_context_flags(active_ingredients)
+        context_flags_triggered += evaluate_cofactor_checks(active_ingredients)
+        context_flags_triggered.sort(key=lambda f: SEVERITY_ORDER.get(f.get("severity", "Info"), 4))
+    except Exception as e:
+        print(f"STAP3 ERROR: {e}", flush=True)
+        context_flags_triggered = []
 
-        # Evaluate with Claude
+    # Stap 4: criteria laden en evalueren
+    try:
+        criteria = load_engine_criteria()
         evaluations_data, relevant_criteria = evaluate_criteria_with_claude(product_data, criteria, product_type, url)
+    except Exception as e:
+        print(f"STAP4 ERROR: {e}", flush=True)
+        evaluations_data = {"evaluations": [], "key_strengths": [], "key_weaknesses": [], "inferior_forms_found": []}
+        relevant_criteria = []
 
-        # Confidence score
+    # Stap 5: score berekenen
+    try:
+        score_pct, critical_fail, non_verifiable_count = calculate_score(evaluations_data, relevant_criteria, product_type)
+        score_100, kwalificatie, verdict = determine_verdict(score_pct, critical_fail)
         evals = evaluations_data.get("evaluations", [])
         exact_count = sum(1 for e in evals if e.get("data_quality", "").upper() == "EXACT")
         total_evals = len(evals)
         confidence = exact_count / total_evals if total_evals > 0 else 0.0
-        low_confidence_warning = (
-            "Beperkte productinformatie beschikbaar. Deze beoordeling is gebaseerd op wat publiek vermeld staat op de productpagina."
-            if confidence < 0.4 else None
-        )
+    except Exception as e:
+        print(f"STAP5 ERROR: {e}", flush=True)
+        score_100 = 0
+        kwalificatie = "Onbekend"
+        verdict = "Niet beschikbaar"
+        critical_fail = False
+        non_verifiable_count = 0
+        confidence = 0.0
 
-        # Score calculation
-        score_pct, critical_fail, non_verifiable_count = calculate_score(evaluations_data, relevant_criteria, product_type)
-        score_100, kwalificatie, verdict = determine_verdict(score_pct, critical_fail)
-
-        # Consumer output
+    # Stap 6: consumer output genereren
+    try:
         consumer_output = generate_consumer_output(
             product_data, evaluations_data, relevant_criteria,
             score_100, kwalificatie, verdict, product_type, critical_fail,
             context_flags_triggered=context_flags_triggered
         )
-
-        # Apply jargon simplification
-        consumer_output = simplify_jargon(consumer_output)
-
-        response_body = {
-            "product_name": product_data.get("product_name", "Onbekend"),
-            "brand": product_data.get("brand_name", "Onbekend"),
-            "score": score_100,
-            "kwalificatie": kwalificatie,
-            "verdict": verdict,
-            "product_type": product_type,
-            "product_complexity_tier": product_complexity_tier,
-            "product_complexity_label": COMPLEXITY_LABELS.get(product_complexity_tier, product_complexity_tier),
-            "critical_gate": critical_fail,
-            "non_verifiable_count": non_verifiable_count,
-            "criteria_evaluated": len(relevant_criteria),
-            "confidence": round(confidence, 2),
-            "price": product_data.get("price", ""),
-            "package_size": product_data.get("package_size", ""),
-            "price_per_day": price_per_day,
-            "price_per_gram": price_per_gram,
-            "intake_advice": intake_advice,
-            "context_flags": context_flags_triggered,
-            "context_flags_triggered": context_flags_triggered,
-            "quality_certs": [c for c in product_data.get("certifications", []) if any(q in c.lower() for q in QUALITY_CERT_LIST)],
-            "sustainability_certs": [c for c in product_data.get("certifications", []) if any(s in c.lower() for s in SUSTAINABILITY_CERT_LIST)],
-            "problem_ids": product_data.get("problem_ids", []),
-            **consumer_output
-        }
-        if low_confidence_warning:
-            response_body["low_confidence_warning"] = low_confidence_warning
-
-        return jsonify(response_body)
     except Exception as e:
-        return jsonify({"error": f"Engine error: {str(e)}"}), 500
+        print(f"STAP6 ERROR: {e}", flush=True)
+        consumer_output = {
+            "wat_doet": "Beoordeling tijdelijk niet beschikbaar.",
+            "beoordeling_tabel": [],
+            "highlights": [],
+            "context_flags_output": [],
+            "wat_zou_beter": "",
+            "voor_wie_geschikt": "",
+            "voor_wie": "",
+            "consumer_summary": "Beoordeling kon niet worden gegenereerd."
+        }
+
+    # Stap 7: jargon vereenvoudigen
+    try:
+        consumer_output = simplify_jargon(consumer_output)
+    except Exception as e:
+        print(f"STAP7 ERROR: {e}", flush=True)
+
+    # Certificeringen splitsen
+    try:
+        all_certs = product_data.get("certifications", [])
+        quality_certs = [c for c in all_certs if any(q in str(c).lower() for q in QUALITY_CERT_LIST)]
+        sustainability_certs = [c for c in all_certs if any(s in str(c).lower() for s in SUSTAINABILITY_CERT_LIST)]
+    except Exception as e:
+        print(f"CERTS ERROR: {e}", flush=True)
+        quality_certs = []
+        sustainability_certs = []
+
+    # Response samenstellen — kan nooit crashen
+    response_body = {
+        "product_name": product_data.get("product_name", "Onbekend"),
+        "brand": product_data.get("brand_name", "Onbekend"),
+        "score": score_100,
+        "kwalificatie": kwalificatie,
+        "verdict": verdict,
+        "product_type": product_type,
+        "product_complexity_tier": product_complexity_tier,
+        "product_complexity_label": COMPLEXITY_LABELS.get(product_complexity_tier, product_complexity_tier),
+        "critical_gate": critical_fail,
+        "non_verifiable_count": non_verifiable_count,
+        "criteria_evaluated": len(relevant_criteria),
+        "confidence": round(confidence, 2),
+        "price": product_data.get("price", ""),
+        "package_size": product_data.get("package_size", ""),
+        "price_per_day": price_per_day,
+        "price_per_gram": price_per_gram,
+        "intake_advice": intake_advice,
+        "context_flags": context_flags_triggered,
+        "context_flags_triggered": context_flags_triggered,
+        "quality_certs": quality_certs,
+        "sustainability_certs": sustainability_certs,
+        "problem_ids": product_data.get("problem_ids", []),
+        **consumer_output
+    }
+
+    return jsonify(response_body)
 
 
 @app.route("/health", methods=["GET"])
