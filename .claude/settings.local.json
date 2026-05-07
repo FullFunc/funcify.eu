@@ -4,7 +4,10 @@
       "PowerShell(Get-Command *)",
       "PowerShell(winget install *)",
       "PowerShell(git *)",
-      "PowerShell(git add *)"
+      "PowerShell(git add *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

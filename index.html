@@ -1069,6 +1069,8 @@
         <div class="result-brand" id="res-brand">MERK</div>
         <div class="result-name" id="res-name">Productnaam</div>
         <div id="res-price-per-unit" style="display:none; margin-top:6px; font-size:13px; color:rgba(255,255,255,0.55);"></div>
+        <div id="res-product-type" style="display:none; margin-top:4px; font-size:12px; color:rgba(255,255,255,0.4); font-family:var(--mono); letter-spacing:0.05em;"></div>
+        <div id="res-price-per-gram" style="display:none; margin-top:2px; font-size:12px; color:rgba(255,255,255,0.4); font-family:var(--mono);"></div>
         <div style="margin-top:16px; font-size:14px; color:rgba(255,255,255,0.7); line-height:1.7;" id="res-intro"></div>
       </div>
       <div class="result-score-block">
@@ -1112,7 +1114,7 @@
 
       <div class="result-section" style="background:rgba(255,255,255,0.01);">
         <p style="font-size:12px; color:var(--grey-600); line-height:1.8;">
-          Deze beoordeling is opgesteld vanuit een orthomoleculair perspectief. Suppletie is een aanvulling op en geen vervanging van gevarieerde voeding, een gezonde leefstijl, voldoende slaap, beweging en stressregulatie. Dit is geen medisch advies. Gebruik je medicijnen of heb je een medische aandoening? Raadpleeg dan altijd een arts of orthomoleculair specialist.
+          Deze beoordeling is opgesteld vanuit een orthomoleculair perspectief. Dat betekent dat wij niet alleen kijken naar de aanbevolen dagelijkse hoeveelheid, maar naar wat klinisch relevant is op basis van biochemische werkzaamheid, biologische beschikbaarheid en individuele context. Suppletie is een aanvulling op en geen vervanging van gevarieerde voeding, een gezonde leefstijl, voldoende slaap, beweging en stressregulatie. De effectiviteit van elk supplement wordt mede bepaald door jouw persoonlijke gezondheidscontext, medicatiegebruik en voedingsstatus. Dit is geen medisch advies. Gebruik je medicijnen of heb je een medische aandoening? Raadpleeg dan altijd een arts of orthomoleculair specialist. Voor een gepersonaliseerde beoordeling op basis van jouw doel, intake en gezondheidscontext, gebruik het persoonlijke intakeprotocol op het platform.
         </p>
       </div>
 
@@ -1573,6 +1575,21 @@ function renderResult(data) {
     }
   }
 
+  const typeEl = document.getElementById('res-product-type');
+  if (typeEl) {
+    const label = data.product_complexity_label || data.product_complexity_tier || '';
+    typeEl.textContent = label ? `Producttype: ${label}` : '';
+    typeEl.style.display = label ? 'block' : 'none';
+  }
+
+  const gramEl = document.getElementById('res-price-per-gram');
+  if (gramEl && data.price_per_gram) {
+    gramEl.textContent = data.price_per_gram + ' actief';
+    gramEl.style.display = 'block';
+  } else if (gramEl) {
+    gramEl.style.display = 'none';
+  }
+
   // consumer_summary (engine) of summary (demo fallback)
   document.getElementById('res-intro').textContent = data.consumer_summary || data.summary || '';
   document.getElementById('res-kwalificatie').textContent = data.kwalificatie || '';
@@ -1588,8 +1605,14 @@ function renderResult(data) {
 
   // Beoordeling tabel — always render all 8 required aspects in order
   const REQUIRED_ASPECTS = [
-    'Moleculaire vormen', 'Doseringen', 'Bioavailabiliteit', 'Transparantie label',
-    'Certificeringen', 'Gezondheidsclaims', 'Serving size', 'Vulstoffen en additieven'
+    'Welke vorm krijg je?',
+    'Krijg je genoeg per dag?',
+    'Hoe goed wordt het opgenomen?',
+    'Is alles duidelijk vermeld?',
+    'Onafhankelijk gecontroleerd?',
+    'Kloppen de gezondheidsclaims?',
+    'Hoeveel per verpakking?',
+    'Zijn er onnodige toevoegingen?'
   ];
   const table = document.getElementById('res-table');
   table.innerHTML = '';
@@ -1598,13 +1621,14 @@ function renderResult(data) {
     const row = tabelRows.find(r =>
       ((r.aspect || r.criterium || '')).toLowerCase() === aspect.toLowerCase()
     ) || {};
-    const oordeel = (row.oordeel || 'DATA_LACUNE').toUpperCase();
+    const oordeel_raw = (row.oordeel || 'ONTBREEKT').toUpperCase();
+    const oordeel = oordeel_raw === 'DATA_LACUNE' ? 'ONTBREEKT' : oordeel_raw;
     const bevinding = row.bevinding || 'Geen informatie beschikbaar op de productpagina.';
     const cls = oordeel === 'GOED'   ? 'oordeel-goed'
               : oordeel === 'MATIG'  ? 'oordeel-matig'
               : oordeel === 'SLECHT' ? 'oordeel-slecht'
               : 'oordeel-ontbreekt';
-    const oordeel_display = row.oordeel || 'DATA_LACUNE';
+    const oordeel_display = oordeel === 'ONTBREEKT' ? 'ONTBREEKT' : row.oordeel;
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${aspect}</td><td>${bevinding}</td><td class="${cls}">${oordeel_display}</td>`;
     table.appendChild(tr);
@@ -1632,8 +1656,10 @@ function renderResult(data) {
     flagsSection.style.display = 'block';
     flags.forEach(f => {
       const div = document.createElement('div');
-      div.className = 'flag-item';
-      div.textContent = typeof f === 'string' ? f : (f.bericht || '');
+      const severity = typeof f === 'object' ? (f.severity || '') : '';
+      const message = typeof f === 'string' ? f : (f.message || f.bericht || '');
+      div.className = 'flag-item' + (severity === 'Critical' ? ' critical' : '');
+      div.textContent = message;
       flagsList.appendChild(div);
     });
   } else {
@@ -1641,14 +1667,19 @@ function renderResult(data) {
   }
 
   // Conditionele secties
-  if (score < 70 || data.critical_gate) {
+  if (score >= 75 && !data.critical_gate) {
+    // Score hoog: toon VOOR WIE IS DIT PRODUCT GESCHIKT
     document.getElementById('res-beter-section').style.display = 'block';
-    document.getElementById('res-voor-wie-section').style.display = 'block';
-    document.getElementById('res-beter').textContent = data.wat_zou_beter || '';
-    document.getElementById('res-voor-wie').textContent = data.voor_wie || '';
-  } else {
-    document.getElementById('res-beter-section').style.display = 'none';
+    document.querySelector('#res-beter-section .result-section-title').textContent = 'Voor wie is dit product geschikt?';
+    document.getElementById('res-beter').textContent = data.voor_wie_geschikt || '';
     document.getElementById('res-voor-wie-section').style.display = 'none';
+  } else {
+    // Score laag: toon WAT ZOU EEN BETER PRODUCT BEVATTEN + VOOR WIE NOG BRUIKBAAR
+    document.getElementById('res-beter-section').style.display = 'block';
+    document.querySelector('#res-beter-section .result-section-title').textContent = 'Wat zou een beter product bevatten?';
+    document.getElementById('res-beter').textContent = data.wat_zou_beter || '';
+    document.getElementById('res-voor-wie-section').style.display = 'block';
+    document.getElementById('res-voor-wie').textContent = data.voor_wie || '';
   }
 
   document.getElementById('resultContainer').classList.add('visible');
