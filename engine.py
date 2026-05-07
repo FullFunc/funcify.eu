@@ -922,14 +922,13 @@ def fetch_with_scrapingbee(url):
                 "api_key": api_key,
                 "url": url,
                 "render_js": "true",
-                "wait": "3000",
-                "wait_for": ".product-description,.ingredients,.composition,.supplement-facts",
+                "wait": "5000",
                 "block_ads": "true",
-                "block_resources": "false",
+                "block_resources": "true",
                 "premium_proxy": "false",
                 "country_code": "nl",
             },
-            timeout=45,
+            timeout=60,
         )
         response.raise_for_status()
         return BeautifulSoup(response.content, "lxml")
