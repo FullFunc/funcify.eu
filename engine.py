@@ -138,6 +138,37 @@ BROAD_INGREDIENT_PAT = re.compile(
     re.I
 )
 
+# ─── Jargon Simplification ────────────────────────────────────────────────────
+JARGON_REPLACEMENTS = [
+    (r"\boxidatiestatus\b", "versheid en stabiliteit van de olie"),
+    (r"\bethylester\b", "goedkopere minder goed opneembare vorm"),
+    (r"\btriglyceridevorm\b", "goed opneembare natuurlijke vorm"),
+    (r"\bbiobeschikbaarheid\b", "opneembaarheid"),
+    (r"\btherapeutisch\b", "werkzaam"),
+    (r"\bklinisch bewezen\b", ""),
+    (r"\bstudies tonen aan\b", ""),
+    (r"\bliteratuur wijst uit\b", ""),
+    (r"\bfarmaceutisch\b", "van hoge kwaliteit"),
+    (r"\bchelaatvorm\b", "goed opneembare gebonden vorm"),
+    (r"\bfosfolipide\b", "opneembaar vetmolecuul"),
+    (r"\bCOA\b", "onafhankelijk laboratoriumrapport"),
+    (r"\bTOTOX\b", "versheidswaarde van de olie"),
+    (r"\bproprietary blend\b", "mengsel met verborgen doseringen"),
+    (r"\bgesupplementeerd\b", "aangevuld"),
+]
+
+
+def simplify_jargon(obj):
+    if isinstance(obj, str):
+        for pattern, replacement in JARGON_REPLACEMENTS:
+            obj = re.sub(pattern, replacement, obj, flags=re.I)
+        return obj
+    elif isinstance(obj, list):
+        return [simplify_jargon(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: simplify_jargon(v) for k, v in obj.items()}
+    return obj
+
 
 # ─── Bioavailability helpers ──────────────────────────────────────────────────
 def _normalize_name(name):
@@ -199,13 +230,145 @@ def evaluate_context_flags(ingredients):
                 if amount is None or not unit:
                     continue
                 val, norm_unit = _unit_to_base(float(amount), unit)
-                threshold_unit = rule["unit"]
-                _, norm_thresh_unit = _unit_to_base(rule["threshold"], threshold_unit)
+                _, norm_thresh_unit = _unit_to_base(rule["threshold"], rule["unit"])
                 if norm_unit == norm_thresh_unit and val >= rule["threshold"]:
                     triggered.append(rule["message"])
                     triggered_ids.add(rule_id)
                     break
     return triggered
+
+
+# ─── Cofactor / Antagonist Checks ────────────────────────────────────────────
+def evaluate_cofactor_checks(ingredients):
+    warnings = []
+    names_lower = [i.get("name", "").lower() for i in ingredients]
+
+    def has_ing(keywords):
+        return any(any(kw in n for kw in keywords) for n in names_lower)
+
+    def get_amount_iu(keywords):
+        for ing in ingredients:
+            n = ing.get("name", "").lower()
+            if any(kw in n for kw in keywords):
+                amt = ing.get("amount")
+                u = (ing.get("unit") or "").lower()
+                if amt is not None and u in ("iu", "ie"):
+                    return float(amt)
+        return 0.0
+
+    def get_amount_mg(keywords):
+        for ing in ingredients:
+            n = ing.get("name", "").lower()
+            if any(kw in n for kw in keywords):
+                amt = ing.get("amount")
+                u = (ing.get("unit") or "").lower()
+                if amt is not None and u == "mg":
+                    return float(amt)
+        return 0.0
+
+    d3_iu = get_amount_iu(["vitamine d3", "cholecalciferol", "vitamin d3", "d3"])
+    k2_present = has_ing(["vitamine k", "vitamin k", "k2", "mk-7", "menaquinon"])
+    if d3_iu >= 2000 and not k2_present:
+        warnings.append("Hoge vitamine D zonder K2 kan calciumdepositie in bloedvaten bevorderen. Overweeg K2 toe te voegen.")
+
+    zinc_mg = get_amount_mg(["zink", "zinc"])
+    copper_present = has_ing(["koper", "copper", "cuprum"])
+    if zinc_mg >= 25 and not copper_present:
+        warnings.append("Hoog zink zonder koper kan bij langdurig gebruik koperdepletie veroorzaken.")
+
+    iron_present = has_ing(["ijzer", "ferrum", "iron"])
+    vitc_present = has_ing(["vitamine c", "ascorbinezuur", "natriumascorbaat", "ascorbate", "vitamin c"])
+    if iron_present and not vitc_present:
+        warnings.append("Vitamine C verbetert ijzeropname significant. Neem bij voorkeur samen in.")
+
+    omega3_present = has_ing(["epa", "dha", "omega-3", "omega 3", "visolie", "fish oil"])
+    vite_present = has_ing(["vitamine e", "tocoferol", "tocopherol", "vitamin e"])
+    if omega3_present and not vite_present:
+        warnings.append("Omega-3 vetzuren zijn gevoelig voor oxidatie. Controleer of het product antioxidantbescherming bevat.")
+
+    return warnings
+
+
+# ─── Intake Advice ────────────────────────────────────────────────────────────
+def get_intake_advice(ingredients):
+    names_lower = [i.get("name", "").lower() for i in ingredients]
+
+    def has_ing(keywords):
+        return any(any(kw in n for kw in keywords) for n in names_lower)
+
+    advices = []
+    if has_ing(["epa", "dha", "omega-3", "omega 3", "visolie", "fish oil", "levertraan"]):
+        advices.append("Neem in bij een maaltijd met vet voor optimale opname.")
+    if has_ing(["magnesium"]):
+        advices.append("Kan nuchter worden ingenomen maar bij gevoelige maag bij een maaltijd innemen.")
+    if has_ing(["ijzer", "ferrum", "iron"]):
+        advices.append("Neem in op nuchtere maag of met vitamine C. Niet combineren met koffie, thee of zuivel.")
+    if has_ing(["vitamine d", "vitamin d", "cholecalciferol", "d3"]):
+        advices.append("Neem in bij een vetbevattende maaltijd voor optimale opname.")
+    if has_ing(["lactobacillus", "bifidobacterium", "saccharomyces", "probiotica", "probiotic"]):
+        advices.append("Neem bij voorkeur op nuchtere maag of 30 minuten voor de maaltijd.")
+    if has_ing(["creatine"]):
+        advices.append("Tijdstip van inname maakt weinig uit. Consistent dagelijks gebruik is belangrijker.")
+    return " ".join(advices)
+
+
+# ─── Price Calculations ───────────────────────────────────────────────────────
+def _parse_price(price_str):
+    if not price_str:
+        return 0.0
+    cleaned = re.sub(r"[^\d,\.]", "", price_str).replace(",", ".")
+    m = re.search(r"\d+\.\d+|\d+", cleaned)
+    return float(m.group(0)) if m else 0.0
+
+
+def _parse_units(package_size_str):
+    m = re.search(r"(\d+)", package_size_str or "")
+    return int(m.group(1)) if m else 0
+
+
+def _parse_servings_per_day(serving_size_str):
+    m = re.search(r"(\d+)", serving_size_str or "")
+    return max(1, int(m.group(1))) if m else 1
+
+
+def calculate_price_per_day(price_str, package_size_str, serving_size_str):
+    price = _parse_price(price_str)
+    units = _parse_units(package_size_str)
+    spd = _parse_servings_per_day(serving_size_str)
+    if not price or not units:
+        return ""
+    days = units / spd
+    if days <= 0:
+        return ""
+    ppd = price / days
+    return "€" + f"{ppd:.2f}".replace(".", ",") + " per dag"
+
+
+def calculate_price_per_gram(price_str, ingredients, package_size_str, serving_size_str):
+    price = _parse_price(price_str)
+    units = _parse_units(package_size_str)
+    spd = _parse_servings_per_day(serving_size_str)
+    if not price or not units:
+        return ""
+    total_mg_per_serving = 0.0
+    for ing in ingredients:
+        if ing.get("type") == "vul-additief":
+            continue
+        amt = ing.get("amount")
+        unit = (ing.get("unit") or "").lower()
+        if amt is None:
+            continue
+        if unit == "mg":
+            total_mg_per_serving += float(amt)
+        elif unit == "g":
+            total_mg_per_serving += float(amt) * 1000
+    if total_mg_per_serving <= 0:
+        return ""
+    total_g = (total_mg_per_serving * units) / spd / 1000
+    if total_g <= 0:
+        return ""
+    ppg = price / total_g
+    return "€" + f"{ppg:.2f}".replace(".", ",") + " per gram"
 
 
 # ─── Excel criteria loading ───────────────────────────────────────────────────
@@ -335,7 +498,18 @@ REGELS:
 - Fail=0: informatie aanwezig maar voldoet NIET (bewijs van slechte kwaliteit)
 - Onbekend=-1: informatie niet beschikbaar (DATA_LACUNE, neutraal, nooit negatief)
 - Ontbrekende data is NOOIT negatief. Alleen bewezen slechte kwaliteit telt als Fail.
+- Behandel ontbrekende data NOOIT als bewijs van slechte kwaliteit.
 - VERBODEN: "studies tonen", "literatuur zegt", "klinisch bewezen" - alleen label/website feiten
+- Geef data_quality terug als EXACT (letterlijk op label met exacte waarde), AFGELEID (logisch af te leiden), ONVOLLEDIG (deels beschikbaar), NIET_GEVONDEN (niet aangetroffen op pagina).
+
+SEVERITY TUNING voor omega-3 producten:
+- Ontbrekende IFOS certificering = DATA_LACUNE, niet negatief
+- Ontbrekende onafhankelijk laboratoriumrapport = DATA_LACUNE middel
+- Ontbrekende EPA/DHA specificatie bij omega-3 = critical fail (dit is kerndata)
+- Goedkopere minder goed opneembare vorm = negatief middel
+- Mengsel met verborgen doseringen = negatief zwaar
+- Ontbrekende batchdata = DATA_LACUNE klein
+
 - Geef alleen valide JSON terug."""
     user_prompt = f"""Product URL: {url}
 Product: {product_data.get('product_name', 'Onbekend')}
@@ -358,7 +532,7 @@ AANVULLENDE INFO:
 {product_data.get('additional_info', '')[:1500]}
 
 CRITERIA:
-{criteria_text}
+{criteria_text if criteria_text else 'Geen criteria beschikbaar (geen Excel geladen)'}
 
 Geef terug als JSON:
 {{
@@ -385,15 +559,28 @@ Geef terug als JSON:
 
 
 def calculate_score(evaluations_data, criteria):
+    """
+    Score calculation with data_quality awareness.
+    - NIET_GEVONDEN → always neutral (pass_value forced to -1)
+    - ONVOLLEDIG + fail → half-weight penalty
+    - Critical gate only triggers on EXACT or AFGELEID fail evidence
+    """
     evaluations = evaluations_data.get("evaluations", [])
-    total_raw_score = 0
-    total_max_weight = 0
+    total_raw_score = 0.0
+    total_max_weight = 0.0
     critical_fail = False
     non_verifiable_count = 0
+
     for i, criterion in enumerate(criteria):
         eval_item = next((e for e in evaluations if e.get("criterion_index") == i + 1), None)
         pass_value = eval_item.get("pass_value", -1) if eval_item else -1
+        data_quality = (eval_item.get("data_quality", "") if eval_item else "").upper()
         weight = criterion["weight"]
+
+        # NIET_GEVONDEN is always neutral
+        if data_quality == "NIET_GEVONDEN":
+            pass_value = -1
+
         if pass_value == -1:
             non_verifiable_count += 1
             total_max_weight += weight
@@ -401,11 +588,16 @@ def calculate_score(evaluations_data, criteria):
             total_raw_score += weight
             total_max_weight += weight
         elif pass_value == 0:
-            total_max_weight += weight
-            if criterion["critical"]:
+            # ONVOLLEDIG fail: halve the penalty weight
+            effective_weight = weight * 0.5 if data_quality == "ONVOLLEDIG" else weight
+            total_max_weight += effective_weight
+            # Critical gate only on proven evidence (EXACT or AFGELEID)
+            if criterion["critical"] and data_quality in ("EXACT", "AFGELEID", ""):
                 critical_fail = True
+
     if total_max_weight == 0:
-        return 0, False, 0
+        return 0.0, False, 0
+
     score_pct = total_raw_score / total_max_weight
     if critical_fail:
         score_pct = min(score_pct, 0.49)
@@ -438,14 +630,25 @@ def generate_consumer_output(product_data, evaluations_data, criteria, score_100
         for ing in product_data.get("ingredients", [])
     ])
     flags_text = "\n".join(context_flags_triggered or []) or "Geen"
-    system_prompt = """Je bent de Funcify consumer output generator. Schrijf heldere eerlijke beoordelingen in Nederlands.
-TOON: Direct, eerlijk, consumentvriendelijk. Geen jargon. Geen medisch advies.
+    system_prompt = """Schrijf ALTIJD in tweede persoon (je, jij). Maximaal 2-3 zinnen per sectie. Geen Engelse termen tenzij geen Nederlandse equivalent bestaat. Geen wetenschappelijk jargon. Schrijf alsof je het uitlegt aan iemand zonder medische kennis maar die wel serieus is over gezondheid. Begin elke sectie direct met de inhoud, geen inleidende zinnen als 'Dit product' of 'Het supplement'.
+
+Je bent de Funcify consumer output generator. Schrijf heldere eerlijke beoordelingen in Nederlands.
+TOON: Direct, eerlijk, consumentvriendelijk.
 VERBODEN: studies tonen, literatuur zegt, klinisch bewezen, therapeutisch.
-DATA_LACUNE = neutraal, nooit negatief. Geef alleen valide JSON terug."""
+DATA_LACUNE = neutraal, nooit negatief.
+
+De beoordeling_tabel bevat ALTIJD exact deze 8 aspecten in deze volgorde: Moleculaire vormen, Doseringen, Bioavailabiliteit, Transparantie label, Certificeringen, Gezondheidsclaims, Serving size, Vulstoffen en additieven.
+wat_doet is altijd 2-3 zinnen. consumer_summary is altijd 2-3 zinnen.
+highlights bevat altijd minimaal 2 positieve en 2 negatieve punten.
+context_flags bevat alleen waarschuwingen die direct getriggerd worden door specifieke ingredienten en doseringen uit dit product, nooit generiek advies.
+Als een aspect geen data heeft schrijf dan als bevinding: Geen informatie beschikbaar op de productpagina. — nooit een lege bevinding.
+
+Geef alleen valide JSON terug."""
     user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')} ({product_data.get('brand_name', 'Onbekend')})
 Score: {score_100}/100 | Kwalificatie: {kwalificatie} | Verdict: {verdict}
 Critical gate: {'JA' if critical_fail else 'NEE'}
 Prijs per serving: {price_per_serving or 'onbekend'}
+Product URL: {product_data.get('url', '')}
 
 INGREDIENTEN:
 {ingredients_text or 'Niet gevonden'}
@@ -467,13 +670,15 @@ Genereer JSON:
     {{"aspect": "Certificeringen", "bevinding": "welke certificeringen aanwezig", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
     {{"aspect": "Gezondheidsclaims", "bevinding": "zijn claims reeel en in lijn met ingredienten", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
     {{"aspect": "Serving size", "bevinding": "serving size, dagdosering en aantal servings", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Vulstoffen en additieven", "bevinding": "alle vulstoffen en additieven uit ingrediëntenlijst", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}}
+    {{"aspect": "Vulstoffen en additieven", "bevinding": "alle vulstoffen en additieven uit ingredientenlijst", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}}
   ],
   "highlights": [
-    {{"type": "positief", "tekst": "sterk punt"}},
-    {{"type": "negatief", "tekst": "zwak punt"}}
+    {{"type": "positief", "tekst": "sterk punt 1"}},
+    {{"type": "positief", "tekst": "sterk punt 2"}},
+    {{"type": "negatief", "tekst": "zwak punt 1"}},
+    {{"type": "negatief", "tekst": "zwak punt 2"}}
   ],
-  "context_flags": ["waarschuwingen voor specifieke groepen indien van toepassing"],
+  "context_flags": ["alleen product-specifieke waarschuwingen op basis van ingredienten en doseringen"],
   "wat_zou_beter": "wat zou een beter product anders doen",
   "voor_wie": "voor wie nog bruikbaar",
   "consumer_summary": "2-3 zinnen samenvatting"
@@ -508,15 +713,12 @@ def extract_text_blocks(soup, selectors):
 
 
 def _parse_nested_composition(text):
-    """Parse nested sub-ingredient blocks introduced by 'Waarvan:', 'w.o.', etc."""
     nested_results = []
-    # Split on nested keywords to find sub-ingredient blocks
     pattern = re.compile(r"(?:Waarvan|waarvan|w\.o\.|Davon|dont)\s*[:\s]", re.I)
     parts = pattern.split(text)
     if len(parts) <= 1:
         return nested_results
     for part in parts[1:]:
-        # Each subsequent part may have multiple sub-ingredients on the same line
         for m in AMOUNT_PAT.finditer(part[:300]):
             before = part[:m.start()].strip(" ()-:")
             name_candidate = re.split(r"[,;]", before)[-1].strip()
@@ -525,9 +727,7 @@ def _parse_nested_composition(text):
                     "name": name_candidate,
                     "amount": float(m.group(1).replace(",", ".")),
                     "unit": m.group(2).lower(),
-                    "form": "",
-                    "type": "actief",
-                    "nested": True,
+                    "form": "", "type": "actief", "nested": True,
                 })
     return nested_results
 
@@ -536,7 +736,6 @@ def parse_ingredients_from_text(text):
     ingredients = []
     seen_names = set()
 
-    # First pass: line-by-line parsing (existing logic)
     lines = re.split(r"[;|\n]", text)
     for line in lines:
         line = line.strip()
@@ -562,8 +761,7 @@ def parse_ingredients_from_text(text):
                 ingredients.append({
                     "name": name,
                     "amount": float(amount_str) if amount_str else None,
-                    "unit": unit,
-                    "form": form,
+                    "unit": unit, "form": form,
                     "type": "vul-additief" if excipient else "actief",
                     "nested": is_nested,
                 })
@@ -578,7 +776,6 @@ def parse_ingredients_from_text(text):
                         "form": form, "type": "vul-additief", "nested": False,
                     })
 
-    # Second pass: broad regex on full text for missed ingredients
     for m in BROAD_INGREDIENT_PAT.finditer(text):
         name = m.group(1).strip(" ()-:")
         if not name or len(name) < 2 or name.lower() in seen_names:
@@ -595,7 +792,6 @@ def parse_ingredients_from_text(text):
             "form": "", "type": "vul-additief" if excipient else "actief", "nested": False,
         })
 
-    # Third pass: nested composition blocks
     for nested in _parse_nested_composition(text):
         if nested["name"].lower() not in seen_names:
             seen_names.add(nested["name"].lower())
@@ -666,20 +862,16 @@ def _extract_warnings(page_text):
 def scrape_product(soup, url=""):
     page_text = soup.get_text(" ", strip=True)
 
-    # Product name
     name_texts = extract_text_blocks(soup, ["h1", ".product-title", ".product-name", '[itemprop="name"]'])
     product_name = (name_texts[0] if name_texts else "")[:200]
 
-    # Brand
     brand_name = _extract_brand(soup, page_text, url)[:100]
 
-    # Price — regex on full page_text
     price = ""
     price_match = re.search(r"[€\$]?\s*(\d+[,\.]\d{2})", page_text)
     if price_match:
         price = f"€{price_match.group(1)}"
 
-    # Serving size + usage instructions
     serving_size = ""
     usage_instructions = ""
     serving_match = re.search(
@@ -690,7 +882,6 @@ def scrape_product(soup, url=""):
         serving_size = serving_match.group(1).strip()[:200]
         usage_instructions = serving_match.group(0).strip()[:300]
 
-    # Package size
     package_size = ""
     pkg_match = re.search(
         r"(\d+)\s*(capsules?|softgels?|tabletten?|vegicaps?|stuks?|caps?)",
@@ -699,7 +890,6 @@ def scrape_product(soup, url=""):
     if pkg_match:
         package_size = pkg_match.group(0)
 
-    # Ingredients
     ing_match = re.search(
         r"(?:ingredi[eë]nten|samenstelling|inhoudsstoffen|supplement\s*facts|ingredients)[:\s]*(.{20,4000}?)(?:\n{2,}|\*{2,}|©|Bewaar|Gebruiksaanwijzing|Aanbevolen\s+dagelijkse|Disclaimer|$)",
         page_text, re.I | re.S
@@ -708,10 +898,8 @@ def scrape_product(soup, url=""):
     ingredients = parse_ingredients_from_text(full_ingredient_text)
     active_ingredients, excipients = _split_active_excipients(ingredients)
 
-    # Certifications
     certifications = _extract_certifications(soup, page_text)
 
-    # Health claims
     claims_texts = extract_text_blocks(soup, [".claims", "[class*='claim']", ".usp", "[class*='usp']", "[class*='benefit']"])
     health_claims = [c for c in claims_texts if 10 < len(c) < 300][:8]
     if not health_claims:
@@ -721,7 +909,6 @@ def scrape_product(soup, url=""):
                 health_claims.append(claim)
         health_claims = health_claims[:8]
 
-    # Warnings
     warnings = _extract_warnings(page_text)
 
     return {
@@ -747,7 +934,6 @@ def is_sufficient(data):
 
 def anthropic_fallback(url, page_text=""):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    # Include first 2000 chars for cert detection and additional cert prompt
     page_sample = page_text[:2000] if page_text else "Niet beschikbaar"
     prompt = f"""Analyseer deze supplementpagina en extraheer productinformatie.
 URL: {url}
@@ -812,34 +998,106 @@ def score():
     product_data = request.get_json(silent=True) or {}
     try:
         url = product_data.get("url", "")
+        product_data["url"] = url
         criteria = load_engine_criteria()
         product_type = detect_product_type(product_data)
-        context_flags_triggered = evaluate_context_flags(product_data.get("ingredients", []))
+        ingredients = product_data.get("ingredients", [])
+
+        # Sustainability check for omega-3
+        if product_type == "OMEGA3":
+            sus_keywords = ["msc", "friend of the sea", "dolphin safe", "marine stewardship"]
+            certs = product_data.get("certifications", [])
+            has_sus = any(any(sk in c.lower() for sk in sus_keywords) for c in certs)
+            if not has_sus:
+                certs = list(certs) + ["DATA_LACUNE: Geen duurzaamheidscertificering gevonden. Herkomst en vangstmethode onbekend."]
+                product_data["certifications"] = certs
+
+        # Context flags: standard rules + cofactor checks
+        context_flags_triggered = evaluate_context_flags(ingredients)
+        context_flags_triggered += evaluate_cofactor_checks(ingredients)
         product_data["context_flags_triggered"] = context_flags_triggered
-        product_data["url"] = url
+
+        # Intake advice
+        intake_advice = get_intake_advice(ingredients)
+
+        # Complexity tier
+        active_count = len(product_data.get("active_ingredients", ingredients))
+        if active_count <= 2:
+            product_complexity_tier = "Single"
+        elif active_count <= 6:
+            product_complexity_tier = "Multi"
+        else:
+            product_complexity_tier = "Complex"
+
+        # Price calculations
+        price_str = product_data.get("price", "")
+        package_size_str = product_data.get("package_size", "")
+        serving_size_str = product_data.get("serving_size", "")
+        price_per_day = calculate_price_per_day(price_str, package_size_str, serving_size_str)
+        price_per_gram = calculate_price_per_gram(price_str, ingredients, package_size_str, serving_size_str)
+
+        # Evaluate with Claude
         evaluations_data, relevant_criteria = evaluate_criteria_with_claude(product_data, criteria, product_type, url)
+
+        # Confidence score
+        evals = evaluations_data.get("evaluations", [])
+        exact_count = sum(1 for e in evals if e.get("data_quality", "").upper() == "EXACT")
+        total_evals = len(evals)
+        confidence = exact_count / total_evals if total_evals > 0 else 0.0
+        low_confidence_warning = (
+            "Beperkte productinformatie beschikbaar. Deze beoordeling is gebaseerd op wat publiek vermeld staat op de productpagina."
+            if confidence < 0.4 else None
+        )
+
+        # Score calculation
         score_pct, critical_fail, non_verifiable_count = calculate_score(evaluations_data, relevant_criteria)
         score_100, kwalificatie, verdict = determine_verdict(score_pct, critical_fail)
+
+        # Consumer output
         consumer_output = generate_consumer_output(
             product_data, evaluations_data, relevant_criteria,
             score_100, kwalificatie, verdict, product_type, critical_fail,
             context_flags_triggered=context_flags_triggered
         )
-        return jsonify({
+
+        # Fallback score from beoordeling_tabel when no criteria loaded or score is 0
+        if (not relevant_criteria or score_100 == 0) and consumer_output.get("beoordeling_tabel"):
+            tabel = consumer_output["beoordeling_tabel"]
+            goed = sum(1 for r in tabel if r.get("oordeel", "").upper() == "GOED")
+            matig = sum(1 for r in tabel if r.get("oordeel", "").upper() == "MATIG")
+            fallback = min(100, round((goed * 12 + matig * 6) / 96 * 100))
+            if fallback > score_100:
+                score_100 = fallback
+                score_pct = fallback / 100
+                score_100, kwalificatie, verdict = determine_verdict(score_pct, critical_fail)
+
+        # Apply jargon simplification
+        consumer_output = simplify_jargon(consumer_output)
+
+        response_body = {
             "product_name": product_data.get("product_name", "Onbekend"),
             "brand": product_data.get("brand_name", "Onbekend"),
             "score": score_100,
             "kwalificatie": kwalificatie,
             "verdict": verdict,
             "product_type": product_type,
+            "product_complexity_tier": product_complexity_tier,
             "critical_gate": critical_fail,
             "non_verifiable_count": non_verifiable_count,
             "criteria_evaluated": len(relevant_criteria),
+            "confidence": round(confidence, 2),
             "price": product_data.get("price", ""),
             "package_size": product_data.get("package_size", ""),
+            "price_per_day": price_per_day,
+            "price_per_gram": price_per_gram,
+            "intake_advice": intake_advice,
             "context_flags_triggered": context_flags_triggered,
             **consumer_output
-        })
+        }
+        if low_confidence_warning:
+            response_body["low_confidence_warning"] = low_confidence_warning
+
+        return jsonify(response_body)
     except Exception as e:
         return jsonify({"error": f"Engine error: {str(e)}"}), 500
 

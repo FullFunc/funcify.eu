@@ -1068,6 +1068,7 @@
       <div class="result-product">
         <div class="result-brand" id="res-brand">MERK</div>
         <div class="result-name" id="res-name">Productnaam</div>
+        <div id="res-price-per-unit" style="display:none; margin-top:6px; font-size:13px; color:rgba(255,255,255,0.55);"></div>
         <div style="margin-top:16px; font-size:14px; color:rgba(255,255,255,0.7); line-height:1.7;" id="res-intro"></div>
       </div>
       <div class="result-score-block">
@@ -1510,9 +1511,9 @@ function startScan() {
   })
   .catch(err => {
     clearInterval(stepInterval);
-    console.warn('Backend niet bereikbaar, demo modus actief:', err.message);
+    console.error('Analyse mislukt:', err.message);
     resetLoading();
-    renderDemoResult();
+    showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');
   });
 }
 
@@ -1541,8 +1542,37 @@ function renderResult(data) {
   else if (score >= 50) scoreEl.classList.add('moderate');
   else scoreEl.classList.add('poor');
 
-  document.getElementById('res-brand').textContent = data.brand || 'Onbekend merk';
+  // Brand — hide if empty or Onbekend
+  const brandEl = document.getElementById('res-brand');
+  const brand = data.brand || data.brand_name || '';
+  if (brand && brand.toLowerCase() !== 'onbekend') {
+    brandEl.textContent = brand;
+    brandEl.style.display = '';
+  } else {
+    brandEl.style.display = 'none';
+  }
   document.getElementById('res-name').textContent = data.product_name || 'Onbekend product';
+
+  // Price line: per capsule · stuks · per dag
+  const priceEl = document.getElementById('res-price-per-unit');
+  if (priceEl) {
+    const priceNum = parseFloat((data.price || '').replace(/[^\d.,]/g, '').replace(',', '.'));
+    const pkgMatch = (data.package_size || '').match(/(\d+)/);
+    const pkgCount = pkgMatch ? parseInt(pkgMatch[1]) : 0;
+    if (priceNum > 0 && pkgCount > 0) {
+      const pricePerUnit = '€' + (priceNum / pkgCount).toFixed(2).replace('.', ',');
+      let priceText = pricePerUnit + ' per capsule · ' + data.package_size;
+      if (data.price_per_day) priceText += ' · ' + data.price_per_day;
+      priceEl.textContent = priceText;
+      priceEl.style.display = 'block';
+    } else if (data.price_per_day) {
+      priceEl.textContent = data.price_per_day;
+      priceEl.style.display = 'block';
+    } else {
+      priceEl.style.display = 'none';
+    }
+  }
+
   // consumer_summary (engine) of summary (demo fallback)
   document.getElementById('res-intro').textContent = data.consumer_summary || data.summary || '';
   document.getElementById('res-kwalificatie').textContent = data.kwalificatie || '';
@@ -1556,17 +1586,27 @@ function renderResult(data) {
 
   document.getElementById('res-wat-doet').textContent = data.wat_doet || '';
 
-  // Beoordeling tabel — oordeel vergelijking case-insensitief
+  // Beoordeling tabel — always render all 8 required aspects in order
+  const REQUIRED_ASPECTS = [
+    'Moleculaire vormen', 'Doseringen', 'Bioavailabiliteit', 'Transparantie label',
+    'Certificeringen', 'Gezondheidsclaims', 'Serving size', 'Vulstoffen en additieven'
+  ];
   const table = document.getElementById('res-table');
   table.innerHTML = '';
-  (data.beoordeling_tabel || []).forEach(row => {
-    const oordeel = (row.oordeel || '').toUpperCase();
-    const cls = oordeel === 'GOED'    ? 'oordeel-goed'
-              : oordeel === 'MATIG'   ? 'oordeel-matig'
-              : oordeel === 'SLECHT'  ? 'oordeel-slecht'
+  const tabelRows = data.beoordeling_tabel || [];
+  REQUIRED_ASPECTS.forEach(aspect => {
+    const row = tabelRows.find(r =>
+      ((r.aspect || r.criterium || '')).toLowerCase() === aspect.toLowerCase()
+    ) || {};
+    const oordeel = (row.oordeel || 'DATA_LACUNE').toUpperCase();
+    const bevinding = row.bevinding || 'Geen informatie beschikbaar op de productpagina.';
+    const cls = oordeel === 'GOED'   ? 'oordeel-goed'
+              : oordeel === 'MATIG'  ? 'oordeel-matig'
+              : oordeel === 'SLECHT' ? 'oordeel-slecht'
               : 'oordeel-ontbreekt';
+    const oordeel_display = row.oordeel || 'DATA_LACUNE';
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${row.criterium}</td><td>${row.bevinding}</td><td class="${cls}">${row.oordeel}</td>`;
+    tr.innerHTML = `<td>${aspect}</td><td>${bevinding}</td><td class="${cls}">${oordeel_display}</td>`;
     table.appendChild(tr);
   });
 
@@ -1615,36 +1655,20 @@ function renderResult(data) {
   document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// ── ERROR BAR ──
+function showErrorBar(msg) {
+  const existing = document.getElementById('inline-error-bar');
+  if (existing) existing.remove();
+  const bar = document.createElement('div');
+  bar.id = 'inline-error-bar';
+  bar.style.cssText = 'margin-top:16px;padding:14px 18px;background:rgba(255,59,48,0.08);border:1px solid rgba(255,59,48,0.3);border-left:3px solid var(--red);display:flex;align-items:center;justify-content:space-between;gap:16px;';
+  bar.innerHTML = `<span style="font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:0.05em;">${msg}</span><button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--red);font-size:20px;cursor:pointer;padding:0;line-height:1;flex-shrink:0;">×</button>`;
+  document.querySelector('.scanner-box').insertAdjacentElement('afterend', bar);
+}
+
 // ── DEMO RESULT ──
 function renderDemoResult() {
-  renderResult({
-    brand: 'DEMO — Backend nog niet gekoppeld',
-    product_name: 'Voorbeeld Magnesium Bisglycinate 400mg',
-    score: 71,
-    kwalificatie: 'Degelijk',
-    verdict: 'Koopwaardig',
-    consumer_summary: 'Dit is een voorbeeldbeoordeling. Vul in config.js de Railway URLs in om echte analyses te starten.',
-    wat_doet: 'Magnesium ondersteunt meer dan 300 enzymatische processen in het lichaam. Het speelt een centrale rol bij energieproductie, spierfunctie, zenuwgeleiding en slaapkwaliteit. Bisglycinate is een chelaatvorm die beter wordt opgenomen dan oxide of carbonaat.',
-    beoordeling_tabel: [
-      { criterium: 'Moleculaire vorm', bevinding: 'Bisglycinate — hoogwaardige chelaatvorm', oordeel: 'Goed' },
-      { criterium: 'Dosering', bevinding: 'Valt binnen klinisch relevante range', oordeel: 'Goed' },
-      { criterium: 'Transparantie label', bevinding: 'Label volledig, doseringen helder', oordeel: 'Goed' },
-      { criterium: 'Certificering', bevinding: 'COA niet publiek beschikbaar', oordeel: 'Onbekend' },
-      { criterium: 'Derde partij test', bevinding: 'Geen verificatie gevonden', oordeel: 'Onbekend' },
-      { criterium: 'Ingrediëntcombinaties', bevinding: 'Geen antagonistische combinaties', oordeel: 'Goed' },
-    ],
-    highlights: {
-      positief: [
-        'Bisglycinate is een van de best opneembare magnesiumvormen — goede keuze voor slaap en spierherstel.',
-        'Dosering valt binnen de klinisch effectieve range voor magnesiumsuppletie.'
-      ],
-      negatief: [
-        'Geen publiek beschikbare COA gevonden. Productkwaliteit niet onafhankelijk verifieerbaar.'
-      ]
-    },
-    context_flags: [],
-    critical_gate: false
-  });
+  showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');
 }
 </script>
 </body>
