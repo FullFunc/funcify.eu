@@ -809,9 +809,13 @@ Gebruik ALLEEN de excipients lijst. Als leeg: ONTBREEKT. Beoordeel op: onnodige 
 
 Geef alleen valide JSON terug zonder markdown."""
 
+    critical_gate_str = "JA" if critical_fail else "NEE"
+    sectie7_tonen_str = "JA" if sectie7_tonen else "NEE — weglaten"
+    voor_wie_placeholder = "voor wie is dit product nog bruikbaar — 1-2 zinnen" if sectie7_tonen else ""
+
     user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')} ({product_data.get('brand_name', 'Onbekend')})
 Score: {score_100}/100 | Kwalificatie: {kwalificatie} | Verdict: {verdict}
-Producttype: {product_type} | Critical gate: {'JA' if critical_fail else 'NEE'}
+Producttype: {product_type} | Critical gate: {critical_gate_str}
 
 INGREDIENTEN:
 {chr(10).join([f"- {ing.get('name','')}: {ing.get('amount','')} {ing.get('unit','')} (vorm: {ing.get('form','niet vermeld')})" for ing in product_data.get('ingredients', [])]) or 'Geen ingredienten gevonden'}
@@ -844,7 +848,7 @@ CONTEXT WAARSCHUWINGEN (voor highlights en sectie 5):
 {chr(10).join([f.get('message','') for f in (context_flags_triggered or [])]) or 'Geen'}
 
 SECTIE 6 INSTRUCTIE: {sectie6_instructie}
-SECTIE 7 TONEN: {'JA' if sectie7_tonen else 'NEE — weglaten'}
+SECTIE 7 TONEN: {sectie7_tonen_str}
 
 AANVULLENDE PAGINATEKST:
 {product_data.get('additional_info', '')[:2000]}
@@ -870,7 +874,7 @@ Genereer valide JSON met exact deze structuur:
   ],
   "context_flags_output": [],
   "{sectie6_kop}": "tekst conform sectie 6 instructie",
-  "voor_wie": "{'voor wie is dit product nog bruikbaar — 1-2 zinnen' if sectie7_tonen else ''}",
+  "voor_wie": "{voor_wie_placeholder}",
   "consumer_summary": "één zin met sterkste punt en zwakste punt, maximaal 30 woorden"
 }}"""
 
