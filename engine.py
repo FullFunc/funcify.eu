@@ -230,6 +230,9 @@ def evaluate_context_flags(ingredients):
             matched_keyword = any(kw in name_lower for kw in rule["keywords"])
             if not matched_keyword:
                 continue
+            # CF024 high-dose vitamin C: only trigger for active ingredients, not excipients/antioxidants
+            if rule_id == "CF024" and ing.get("type") == "vul-additief":
+                continue
             if rule["operator"] == "any":
                 triggered.append(rule["message"])
                 triggered_ids.add(rule_id)
@@ -336,15 +339,22 @@ def _parse_units(package_size_str):
     return int(m.group(1)) if m else 0
 
 
-def _parse_servings_per_day(serving_size_str):
-    m = re.search(r"(\d+)", serving_size_str or "")
-    return max(1, int(m.group(1))) if m else 1
+def _parse_servings_per_day(serving_size_str, usage_instructions_str=""):
+    s = serving_size_str or ""
+    u = usage_instructions_str or ""
+    if re.search(r"1[-–]2|one to two|één tot twee", s, re.I):
+        return 2
+    m = re.search(r"(\d+)", s)
+    spd = max(1, int(m.group(1))) if m else 1
+    if spd == 1 and re.search(r"\b2\b.{0,20}(per dag|dagelijks)", u, re.I):
+        return 2
+    return spd
 
 
-def calculate_price_per_day(price_str, package_size_str, serving_size_str):
+def calculate_price_per_day(price_str, package_size_str, serving_size_str, usage_instructions_str=""):
     price = _parse_price(price_str)
     units = _parse_units(package_size_str)
-    spd = _parse_servings_per_day(serving_size_str)
+    spd = _parse_servings_per_day(serving_size_str, usage_instructions_str)
     if not price or not units:
         return ""
     days = units / spd
@@ -645,6 +655,7 @@ def generate_consumer_output(product_data, evaluations_data, criteria, score_100
     ]) or "Geen vulstoffen geidentificeerd."
     usage_instructions_text = product_data.get("usage_instructions", "") or ""
     flags_text = "\n".join(context_flags_triggered or []) or "Geen"
+    certifications_text = ", ".join(product_data.get("certifications", [])) or "Geen certificeringen gevonden op de pagina."
     if score_100 > 75:
         _wat_zou_beter_instruction = (
             "ADAPTIEF wat_zou_beter (score >75): beschrijf voor wie dit product het meest geschikt is "
@@ -661,6 +672,7 @@ def generate_consumer_output(product_data, evaluations_data, criteria, score_100
             "ten opzichte van dit product zou hebben. Geen doelgroep beschrijving. Tweede persoon, maximaal 3 zinnen."
         )
     system_prompt = """KRITIEKE REGEL: Schrijf NOOIT inname-advies dat niet letterlijk uit de usage_instructions of additional_info van dit specifieke product komt. Als usage_instructions leeg is schrijf dan alleen: Zie de verpakking voor innameadvies. Verzin NOOIT timing of combinaties met voedsel op basis van algemene kennis.
+TWEEDE KRITIEKE REGEL: Schrijf NOOIT percentages, ratio's of getallen die niet letterlijk op de productpagina of in de verstrekte productdata staan. Geen '50-70% betere opname' of andere berekende claims. Schrijf alleen wat aantoonbaar beschikbaar is. Bij bioavailabiliteit: beschrijf alleen de vorm en waarom die beter is dan alternatieven, zonder getallen te noemen die niet op het label staan.
 
 Schrijf ALTIJD in tweede persoon (je, jij). Maximaal 2-3 zinnen per sectie. Geen Engelse termen tenzij geen Nederlandse equivalent bestaat. Geen wetenschappelijk jargon. Schrijf alsof je het uitlegt aan iemand zonder medische kennis maar die wel serieus is over gezondheid. Begin elke sectie direct met de inhoud, geen inleidende zinnen als 'Dit product' of 'Het supplement'.
 
@@ -670,6 +682,7 @@ VERBODEN: studies tonen, literatuur zegt, klinisch bewezen, therapeutisch.
 DATA_LACUNE = neutraal, nooit negatief.
 
 De beoordeling_tabel bevat ALTIJD exact deze 8 aspecten in deze volgorde: Moleculaire vormen, Doseringen, Bioavailabiliteit, Transparantie label, Certificeringen, Gezondheidsclaims, Serving size, Vulstoffen en additieven.
+Voor de Certificeringen rij: benoem ALLE certificeringen uit de CERTIFICERINGEN GEVONDEN OP PAGINA lijst, niet alleen de bekendste. Als meerdere certificeringen aanwezig zijn, noem ze allemaal.
 wat_doet is altijd 2-3 zinnen. consumer_summary is altijd 2-3 zinnen.
 highlights bevat altijd minimaal 2 positieve en 2 negatieve punten.
 context_flags bevat alleen waarschuwingen die direct getriggerd worden door specifieke ingredienten en doseringen uit dit product, nooit generiek advies.
@@ -686,6 +699,7 @@ INGREDIENTEN:
 {ingredients_text or 'Niet gevonden'}
 
 VULSTOFFEN EN HULPSTOFFEN: {excipients_text}
+INSTRUCTIE VULSTOFFEN: GEBRUIK ALLEEN DE BOVENSTAANDE VULSTOFFEN. Maak NOOIT aannames over capsulemateriaal of hulpstoffen die niet in de lijst staan. Als visgelatine in de lijst staat schrijf dan visgelatine, niet 'waarschijnlijk gelatine'. Als de lijst leeg is schrijf dan: Geen vulstoffen beschikbaar op de productpagina.
 GEBRUIKSINSTRUCTIES VAN LABEL: {usage_instructions_text or 'Niet gevonden op de pagina.'}
 
 VULSTOFFEN: {', '.join(additives) or 'Geen'}
@@ -693,6 +707,7 @@ INFERIEURE VORMEN: {', '.join(inferior_forms) or 'Geen'}
 STERKE PUNTEN: {', '.join(strengths) or 'Geen'}
 ZWAKKE PUNTEN: {', '.join(weaknesses) or 'Geen'}
 CONTEXT FLAGS: {flags_text}
+CERTIFICERINGEN GEVONDEN OP PAGINA: {certifications_text}
 
 Genereer JSON:
 {{
@@ -1163,7 +1178,7 @@ def score():
         price_str = product_data.get("price", "")
         package_size_str = product_data.get("package_size", "")
         serving_size_str = product_data.get("serving_size", "")
-        price_per_day = calculate_price_per_day(price_str, package_size_str, serving_size_str)
+        price_per_day = calculate_price_per_day(price_str, package_size_str, serving_size_str, product_data.get("usage_instructions", ""))
         price_per_gram = calculate_price_per_gram(price_str, ingredients, package_size_str, serving_size_str)
 
         # Evaluate with Claude
