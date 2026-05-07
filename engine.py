@@ -630,7 +630,9 @@ def generate_consumer_output(product_data, evaluations_data, criteria, score_100
         for ing in product_data.get("ingredients", [])
     ])
     flags_text = "\n".join(context_flags_triggered or []) or "Geen"
-    system_prompt = """Schrijf ALTIJD in tweede persoon (je, jij). Maximaal 2-3 zinnen per sectie. Geen Engelse termen tenzij geen Nederlandse equivalent bestaat. Geen wetenschappelijk jargon. Schrijf alsof je het uitlegt aan iemand zonder medische kennis maar die wel serieus is over gezondheid. Begin elke sectie direct met de inhoud, geen inleidende zinnen als 'Dit product' of 'Het supplement'.
+    system_prompt = """KRITIEKE REGEL: Schrijf NOOIT inname-advies dat niet letterlijk uit de usage_instructions of additional_info van dit specifieke product komt. Als usage_instructions leeg is schrijf dan alleen: Zie de verpakking voor innameadvies. Verzin NOOIT timing of combinaties met voedsel op basis van algemene kennis.
+
+Schrijf ALTIJD in tweede persoon (je, jij). Maximaal 2-3 zinnen per sectie. Geen Engelse termen tenzij geen Nederlandse equivalent bestaat. Geen wetenschappelijk jargon. Schrijf alsof je het uitlegt aan iemand zonder medische kennis maar die wel serieus is over gezondheid. Begin elke sectie direct met de inhoud, geen inleidende zinnen als 'Dit product' of 'Het supplement'.
 
 Je bent de Funcify consumer output generator. Schrijf heldere eerlijke beoordelingen in Nederlands.
 TOON: Direct, eerlijk, consumentvriendelijk.
@@ -700,6 +702,19 @@ def fetch_html(url):
     response = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
     response.raise_for_status()
     return BeautifulSoup(response.content, "lxml")
+
+
+def fetch_with_scrapingbee(url):
+    api_key = os.environ.get("SCRAPINGBEE_KEY")
+    if api_key:
+        response = requests.get(
+            "https://app.scrapingbee.com/api/v1/",
+            params={"api_key": api_key, "url": url, "render_js": "true", "wait": "2000"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return BeautifulSoup(response.content, "lxml")
+    return fetch_html(url)
 
 
 def extract_text_blocks(soup, selectors):
@@ -883,12 +898,23 @@ def scrape_product(soup, url=""):
         usage_instructions = serving_match.group(0).strip()[:300]
 
     package_size = ""
-    pkg_match = re.search(
-        r"(\d+)\s*(capsules?|softgels?|tabletten?|vegicaps?|stuks?|caps?)",
-        page_text + " " + product_name, re.I
-    )
-    if pkg_match:
-        package_size = pkg_match.group(0)
+    _unit_pat = r"(\d+)\s*(softgels?|capsules?|tabletten?|vegicaps?|stuks?|caps?)"
+    _daily_filter = re.compile(r"(per dag|dagelijks|aanbevolen|dosering)", re.I)
+    # Priority: search h1 title and URL first
+    for _candidate_text in [product_name, url]:
+        _m = re.search(_unit_pat, _candidate_text, re.I)
+        if _m:
+            package_size = _m.group(0)
+            break
+    # Fallback: scan page_text line by line, skip lines that mention daily dosage context
+    if not package_size:
+        for _line in page_text.splitlines():
+            if _daily_filter.search(_line):
+                continue
+            _m = re.search(_unit_pat, _line, re.I)
+            if _m:
+                package_size = _m.group(0)
+                break
 
     ing_match = re.search(
         r"(?:ingredi[eë]nten|samenstelling|inhoudsstoffen|supplement\s*facts|ingredients)[:\s]*(.{20,4000}?)(?:\n{2,}|\*{2,}|©|Bewaar|Gebruiksaanwijzing|Aanbevolen\s+dagelijkse|Disclaimer|$)",
@@ -966,6 +992,67 @@ Geef terug als JSON:
         }
 
 
+def extract_with_claude(url, raw_text, product_data):
+    """Second-pass Claude extraction when health_claims are missing or certifications < 2."""
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    prompt = f"""Analyseer de onderstaande paginatekst van een supplementproduct en extraheer de volgende informatie zo volledig mogelijk.
+
+URL: {url}
+Paginatekst (eerste 6000 tekens):
+{raw_text[:6000]}
+
+Geef terug als JSON met ALLEEN deze velden:
+{{
+  "health_claims": ["volledige gezondheidsclaim 1", "claim 2"],
+  "certifications": ["certificering 1", "certificering 2"],
+  "ingredients": [{{"name": "naam", "amount": 0, "unit": "mg", "form": "vorm"}}],
+  "package_size": "getal + eenheid bv 120 capsules",
+  "usage_instructions": "innameadvies letterlijk van de pagina"
+}}
+
+Regels:
+- health_claims: alle claims die iets beweren over gezondheid, werking of doel van het product
+- certifications: alle keurmerken, kwaliteitslogo's en certificeringen die expliciet worden vermeld
+- ingredients: volledige ingrediëntenlijst met naam, hoeveelheid en eenheid
+- package_size: het totale aantal capsules/tabletten/softgels in de verpakking als getal + eenheid
+- usage_instructions: de letterlijke innametekst van de pagina, of leeg als niet gevonden"""
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.content[0].text.strip()
+        raw = re.sub(r"```json\s*", "", raw)
+        raw = re.sub(r"```\s*", "", raw)
+        extracted = json.loads(raw)
+    except Exception:
+        return product_data
+
+    # Merge: Claude values take precedence when non-empty
+    if extracted.get("health_claims"):
+        product_data["health_claims"] = extracted["health_claims"]
+    if extracted.get("certifications"):
+        existing = set(c.lower() for c in product_data.get("certifications", []))
+        for cert in extracted["certifications"]:
+            if cert.lower() not in existing:
+                product_data.setdefault("certifications", []).append(cert)
+                existing.add(cert.lower())
+    if extracted.get("ingredients"):
+        if not product_data.get("ingredients"):
+            ingredients = extracted["ingredients"]
+            active, excipients = _split_active_excipients(ingredients)
+            product_data["ingredients"] = ingredients
+            product_data["active_ingredients"] = active
+            product_data["excipients"] = excipients
+    if extracted.get("package_size") and not product_data.get("package_size"):
+        product_data["package_size"] = extracted["package_size"]
+    if extracted.get("usage_instructions") and not product_data.get("usage_instructions"):
+        product_data["usage_instructions"] = extracted["usage_instructions"]
+
+    return product_data
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.route("/scrape", methods=["POST"])
 def scrape():
@@ -976,10 +1063,16 @@ def scrape():
     product_data = {}
     page_text = ""
     try:
-        soup = fetch_html(url)
+        soup = fetch_with_scrapingbee(url)
         page_text = soup.get_text(" ", strip=True)
         product_data = scrape_product(soup, url)
         product_data["_source"] = "scraper"
+        # Second-pass Claude extraction when claims or certifications are sparse
+        if not product_data.get("health_claims") or len(product_data.get("certifications", [])) < 2:
+            try:
+                product_data = extract_with_claude(url, page_text, product_data)
+            except Exception:
+                pass
     except Exception as e:
         product_data["_source"] = "error"
         product_data["_error"] = str(e)
