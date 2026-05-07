@@ -1378,18 +1378,20 @@ def score():
         product_type = detect_product_type(product_data)
         ingredients = product_data.get("ingredients", [])
 
-        # Sustainability check for omega-3
+        # Sustainability check for omega-3: voeg toe als context flag, niet als nep-certificering
+        active_ingredients = product_data.get("active_ingredients", ingredients)
+        context_flags_triggered = evaluate_context_flags(active_ingredients)
+        context_flags_triggered += evaluate_cofactor_checks(active_ingredients)
         if product_type == "OMEGA3":
             sus_keywords = ["msc", "friend of the sea", "dolphin safe", "marine stewardship"]
             certs = product_data.get("certifications", [])
             has_sus = any(any(sk in c.lower() for sk in sus_keywords) for c in certs)
             if not has_sus:
-                certs = list(certs) + ["DATA_LACUNE: Geen duurzaamheidscertificering gevonden. Herkomst en vangstmethode onbekend."]
-                product_data["certifications"] = certs
-
-        # Context flags: standard rules + cofactor checks
-        context_flags_triggered = evaluate_context_flags(ingredients)
-        context_flags_triggered += evaluate_cofactor_checks(ingredients)
+                context_flags_triggered.append({
+                    "id": "SUS001",
+                    "severity": "Major",
+                    "message": "Geen duurzaamheidscertificering gevonden voor dit visolieproduct. Herkomst en vangstmethode zijn onbekend."
+                })
         product_data["context_flags_triggered"] = context_flags_triggered
 
         # Intake advice
