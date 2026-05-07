@@ -1368,6 +1368,29 @@ def scrape():
 @app.route("/score", methods=["POST"])
 def score():
     product_data = request.get_json(silent=True) or {}
+
+    # Verdedigingslaag: normaliseer alle velden zodat de engine nooit crasht op None of verkeerde types
+    product_data["product_name"] = str(product_data.get("product_name") or "Onbekend")
+    product_data["brand_name"] = str(product_data.get("brand_name") or "Onbekend")
+    product_data["ingredients"] = product_data.get("ingredients") or []
+    product_data["active_ingredients"] = product_data.get("active_ingredients") or []
+    product_data["excipients"] = product_data.get("excipients") or []
+    product_data["health_claims"] = product_data.get("health_claims") or []
+    product_data["certifications"] = product_data.get("certifications") or []
+    product_data["serving_size"] = str(product_data.get("serving_size") or "")
+    product_data["usage_instructions"] = str(product_data.get("usage_instructions") or "")
+    product_data["package_size"] = str(product_data.get("package_size") or "")
+    product_data["price"] = str(product_data.get("price") or "")
+    product_data["additional_info"] = str(product_data.get("additional_info") or "")
+    product_data["warnings"] = product_data.get("warnings") or []
+
+    # Normaliseer elk ingredient zodat er geen None velden zijn
+    for ing in product_data["ingredients"]:
+        ing["name"] = str(ing.get("name") or "")
+        ing["form"] = str(ing.get("form") or "")
+        ing["unit"] = str(ing.get("unit") or "")
+        ing["type"] = str(ing.get("type") or "actief")
+
     try:
         url = product_data.get("url", "")
         product_data["url"] = url
