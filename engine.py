@@ -690,35 +690,46 @@ Geef alleen valide JSON terug zonder markdown."""
     user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')} ({product_data.get('brand_name', 'Onbekend')})
 Score: {score_100}/100 | Kwalificatie: {kwalificatie} | Verdict: {verdict}
 Critical gate: {'JA' if critical_fail else 'NEE'}
-Prijs per serving: {price_per_serving or 'onbekend'}
-Product URL: {product_data.get('url', '')}
+URL: {product_data.get('url', '')}
 
-INGREDIENTEN:
-{ingredients_text or 'Niet gevonden'}
+INGREDIENTEN (voor Moleculaire vormen, Doseringen, Bioavailabiliteit):
+{chr(10).join([f"- {ing.get('name','')}: {ing.get('amount','')} {ing.get('unit','')} (vorm: {ing.get('form','niet vermeld')})" for ing in product_data.get('ingredients', [])]) or 'Geen ingredienten gevonden'}
 
-VULSTOFFEN EN HULPSTOFFEN: {excipients_text}
-INSTRUCTIE VULSTOFFEN: GEBRUIK ALLEEN DE BOVENSTAANDE VULSTOFFEN. Maak NOOIT aannames over capsulemateriaal of hulpstoffen die niet in de lijst staan. Als visgelatine in de lijst staat schrijf dan visgelatine, niet 'waarschijnlijk gelatine'. Als de lijst leeg is schrijf dan: Geen vulstoffen beschikbaar op de productpagina.
-GEBRUIKSINSTRUCTIES VAN LABEL: {usage_instructions_text or 'Niet gevonden op de pagina.'}
+VULSTOFFEN (gebruik ALLEEN voor Vulstoffen rij, geen aannames):
+{chr(10).join([f"- {e}" for e in product_data.get('excipients', [])]) or 'Geen vulstoffen geidentificeerd'}
 
-VULSTOFFEN: {', '.join(additives) or 'Geen'}
-INFERIEURE VORMEN: {', '.join(inferior_forms) or 'Geen'}
-STERKE PUNTEN: {', '.join(strengths) or 'Geen'}
-ZWAKKE PUNTEN: {', '.join(weaknesses) or 'Geen'}
-CONTEXT FLAGS: {flags_text}
-CERTIFICERINGEN GEVONDEN OP PAGINA: {certifications_text}
+GEBRUIKSINSTRUCTIES: {product_data.get('usage_instructions', 'Niet gevonden')}
 
-Genereer JSON:
+GEZONDHEIDSCLAIMS (voor Gezondheidsclaims rij, zoek ook in additional_info):
+{chr(10).join([f"- {c}" for c in product_data.get('health_claims', [])]) or 'Geen claims in gestructureerde data'}
+
+CERTIFICERINGEN (benoem ALLE in Certificeringen rij):
+{', '.join(product_data.get('certifications', [])) or 'Geen certificeringen gevonden'}
+
+SERVING SIZE: {product_data.get('serving_size', 'Niet vermeld')}
+VERPAKKINGSGROOTTE: {product_data.get('package_size', 'Niet vermeld')}
+PRIJS: {product_data.get('price', 'Niet vermeld')}
+
+AANVULLENDE PAGINATEKST (gebruik als extra bron voor ontbrekende claims, certificeringen, waarschuwingen):
+{product_data.get('additional_info', '')[:3000]}
+
+STERKE PUNTEN: {', '.join(evaluations_data.get('key_strengths', []))}
+ZWAKKE PUNTEN: {', '.join(evaluations_data.get('key_weaknesses', []))}
+INFERIEURE VORMEN: {', '.join(evaluations_data.get('inferior_forms_found', []))}
+CONTEXT WAARSCHUWINGEN: {chr(10).join(context_flags_triggered) if context_flags_triggered else 'Geen'}
+
+Genereer valide JSON:
 {{
   "wat_doet": "2-3 zinnen wat dit supplement doet in gewone taal",
   "beoordeling_tabel": [
-    {{"aspect": "Moleculaire vormen", "bevinding": "wat staat op label over vormen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Moleculaire vormen", "bevinding": "beschrijf vormen uit ingredientenlijst", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
     {{"aspect": "Doseringen", "bevinding": "exacte doseringen per dagdosering", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Bioavailabiliteit", "bevinding": "hoe goed worden vormen opgenomen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Transparantie label", "bevinding": "zijn ingredienten, vormen, doseringen volledig", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Certificeringen", "bevinding": "welke certificeringen aanwezig", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Gezondheidsclaims", "bevinding": "zijn claims reeel en in lijn met ingredienten", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Serving size", "bevinding": "serving size, dagdosering en aantal servings", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
-    {{"aspect": "Vulstoffen en additieven", "bevinding": "alle vulstoffen en additieven uit ingredientenlijst", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}}
+    {{"aspect": "Bioavailabiliteit", "bevinding": "opneembaarheid van de gebruikte vormen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Transparantie label", "bevinding": "volledigheid van vormen en doseringen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Certificeringen", "bevinding": "alle gevonden certificeringen", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Gezondheidsclaims", "bevinding": "gevonden claims of DATA_LACUNE", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Serving size", "bevinding": "serving size en verpakkingsgrootte", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}},
+    {{"aspect": "Vulstoffen en additieven", "bevinding": "vulstoffen uit lijst geen aannames", "oordeel": "Goed|Matig|Slecht|DATA_LACUNE"}}
   ],
   "highlights": [
     {{"type": "positief", "tekst": "sterk punt 1"}},
@@ -726,9 +737,9 @@ Genereer JSON:
     {{"type": "negatief", "tekst": "zwak punt 1"}},
     {{"type": "negatief", "tekst": "zwak punt 2"}}
   ],
-  "context_flags": ["alleen product-specifieke waarschuwingen op basis van ingredienten en doseringen"],
-  "wat_zou_beter": "wat zou een beter product anders doen",
-  "voor_wie": "voor wie nog bruikbaar",
+  "context_flags": ["alleen waarschuwingen door specifieke ingredienten en doseringen"],
+  "wat_zou_beter": "adaptief op basis van score instructie",
+  "voor_wie": "voor wie is dit product geschikt",
   "consumer_summary": "2-3 zinnen samenvatting"
 }}"""
     response = client.messages.create(
