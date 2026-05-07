@@ -144,7 +144,9 @@ JARGON_REPLACEMENTS = [
     (r"\bethylester\b", "goedkopere minder goed opneembare vorm"),
     (r"\btriglyceridevorm\b", "goed opneembare natuurlijke vorm"),
     (r"\bbiobeschikbaarheid\b", "opneembaarheid"),
+    (r"\btherapeutische dosering\b", "effectieve dagdosering"),
     (r"\btherapeutisch\b", "werkzaam"),
+    (r"\bklinisch relevante\b", "werkzame"),
     (r"\bklinisch bewezen\b", ""),
     (r"\bstudies tonen aan\b", ""),
     (r"\bliteratuur wijst uit\b", ""),
@@ -155,6 +157,14 @@ JARGON_REPLACEMENTS = [
     (r"\bTOTOX\b", "versheidswaarde van de olie"),
     (r"\bproprietary blend\b", "mengsel met verborgen doseringen"),
     (r"\bgesupplementeerd\b", "aangevuld"),
+    (r"\bbiologisch actief\b", "direct actief"),
+    (r"\bbioactieve\b", "actieve"),
+    (r"\bendogene\b", "eigen aanmaak van"),
+    (r"\bexogeen\b", "via suppletie"),
+    (r"\bfarmacokinetisch\b", "opname-"),
+    (r"\bsubklinisch\b", "nog niet meetbaar"),
+    (r"\binflammatie\b", "ontsteking"),
+    (r"\bsystemisch\b", "via het bloed"),
 ]
 
 
@@ -629,7 +639,27 @@ def generate_consumer_output(product_data, evaluations_data, criteria, score_100
         f"- {ing.get('name', '')}: {ing.get('amount', '')} {ing.get('unit', '')} ({ing.get('form', '')})"
         for ing in product_data.get("ingredients", [])
     ])
+    excipients_text = "\n".join([
+        f"- {e.get('name', '')}"
+        for e in product_data.get("excipients", [])
+    ]) or "Geen vulstoffen geidentificeerd."
+    usage_instructions_text = product_data.get("usage_instructions", "") or ""
     flags_text = "\n".join(context_flags_triggered or []) or "Geen"
+    if score_100 > 75:
+        _wat_zou_beter_instruction = (
+            "ADAPTIEF wat_zou_beter (score >75): beschrijf voor wie dit product het meest geschikt is "
+            "en welk type product nóg beter bij hun doelen zou aansluiten. Tweede persoon, maximaal 3 zinnen."
+        )
+    elif score_100 >= 50:
+        _wat_zou_beter_instruction = (
+            "ADAPTIEF wat_zou_beter (score 50-75): noem maximaal 2 concrete verbeterpunten die een beter product zou hebben, "
+            "en beschrijf kort voor wie dit product toch nog geschikt is. Tweede persoon, maximaal 3 zinnen."
+        )
+    else:
+        _wat_zou_beter_instruction = (
+            "ADAPTIEF wat_zou_beter (score <50): noem alleen de concrete verbeterpunten die een kwalitatief beter alternatief "
+            "ten opzichte van dit product zou hebben. Geen doelgroep beschrijving. Tweede persoon, maximaal 3 zinnen."
+        )
     system_prompt = """KRITIEKE REGEL: Schrijf NOOIT inname-advies dat niet letterlijk uit de usage_instructions of additional_info van dit specifieke product komt. Als usage_instructions leeg is schrijf dan alleen: Zie de verpakking voor innameadvies. Verzin NOOIT timing of combinaties met voedsel op basis van algemene kennis.
 
 Schrijf ALTIJD in tweede persoon (je, jij). Maximaal 2-3 zinnen per sectie. Geen Engelse termen tenzij geen Nederlandse equivalent bestaat. Geen wetenschappelijk jargon. Schrijf alsof je het uitlegt aan iemand zonder medische kennis maar die wel serieus is over gezondheid. Begin elke sectie direct met de inhoud, geen inleidende zinnen als 'Dit product' of 'Het supplement'.
@@ -645,7 +675,7 @@ highlights bevat altijd minimaal 2 positieve en 2 negatieve punten.
 context_flags bevat alleen waarschuwingen die direct getriggerd worden door specifieke ingredienten en doseringen uit dit product, nooit generiek advies.
 Als een aspect geen data heeft schrijf dan als bevinding: Geen informatie beschikbaar op de productpagina. — nooit een lege bevinding.
 
-Geef alleen valide JSON terug."""
+Geef alleen valide JSON terug.""" + "\n\n" + _wat_zou_beter_instruction
     user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')} ({product_data.get('brand_name', 'Onbekend')})
 Score: {score_100}/100 | Kwalificatie: {kwalificatie} | Verdict: {verdict}
 Critical gate: {'JA' if critical_fail else 'NEE'}
@@ -654,6 +684,9 @@ Product URL: {product_data.get('url', '')}
 
 INGREDIENTEN:
 {ingredients_text or 'Niet gevonden'}
+
+VULSTOFFEN EN HULPSTOFFEN: {excipients_text}
+GEBRUIKSINSTRUCTIES VAN LABEL: {usage_instructions_text or 'Niet gevonden op de pagina.'}
 
 VULSTOFFEN: {', '.join(additives) or 'Geen'}
 INFERIEURE VORMEN: {', '.join(inferior_forms) or 'Geen'}
@@ -1067,8 +1100,12 @@ def scrape():
         page_text = soup.get_text(" ", strip=True)
         product_data = scrape_product(soup, url)
         product_data["_source"] = "scraper"
-        # Second-pass Claude extraction when claims or certifications are sparse
-        if not product_data.get("health_claims") or len(product_data.get("certifications", [])) < 2:
+        # Second-pass Claude extraction: triggers independently when health_claims are missing OR certifications are sparse
+        _needs_second_pass = (
+            not product_data.get("health_claims")
+            or len(product_data.get("certifications", [])) < 2
+        )
+        if _needs_second_pass:
             try:
                 product_data = extract_with_claude(url, page_text, product_data)
             except Exception:
