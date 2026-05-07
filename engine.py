@@ -468,7 +468,7 @@ def load_engine_criteria():
     criteria = []
     if not HAS_OPENPYXL:
         return criteria
-    engine_path = os.path.join(BASE_DIR, "Funcify__Engine_Review_V4.xlsx")
+    engine_path = os.path.join(BASE_DIR, "Funcify. Engine Review V4.xlsx")
     if not os.path.exists(engine_path):
         return criteria
     try:
