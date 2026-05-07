@@ -783,7 +783,7 @@ Kritische regels:
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=4000,
+            max_tokens=5000,
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -995,7 +995,7 @@ def evaluate_criteria_with_claude(product_data, criteria, product_type, url=""):
                 "key_weaknesses": [], "inferior_forms_found": []}, []
 
     criteria_text = "\n".join([
-        f"{i+1}. [{c['category']}] {c['criterion']} "
+        f"{i+1}. [{c['category'][:30]}] {c['criterion'][:80]} "
         f"(weight={c['weight']}, critical={'JA' if c['critical'] else 'NEE'})"
         for i, c in enumerate(all_relevant)
     ])
@@ -1003,7 +1003,7 @@ def evaluate_criteria_with_claude(product_data, criteria, product_type, url=""):
     ingredients_text = "\n".join([
         f"- {i.get('name','')}: {i.get('amount','?')} "
         f"{i.get('unit','')} (vorm: {i.get('form','niet vermeld')})"
-        for i in product_data.get("ingredients", [])
+        for i in product_data.get("ingredients", [])[:30]
         if i.get("type") != "vul-additief"
     ])
 
@@ -1077,7 +1077,11 @@ Geef terug als JSON:
     raw = response.content[0].text.strip()
     raw = re.sub(r"```json\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
-    result = json.loads(raw)
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"CRITERIA_EVAL JSON ERROR: {e}", flush=True)
+        raise
     print(f"EVALUATIE: {len(result.get('evaluations', []))} criteria gescoord", flush=True)
     return result, all_relevant
 
@@ -1164,7 +1168,7 @@ def generate_consumer_output(product_data, evaluations_data, criteria,
 
     flags_tekst = "\n".join([
         f.get("message", "")
-        for f in (context_flags_triggered or [])
+        for f in (context_flags_triggered or [])[:6]
     ])
 
     critical_gate_str = "JA" if critical_fail else "NEE"
@@ -1208,7 +1212,7 @@ EXCIPIENTS (ALLEEN voor rij 8):
 {inname}
 
 GEZONDHEIDSCLAIMS:
-{chr(10).join(product_data.get('health_claims', [])) or 'Geen'}
+{chr(10).join(product_data.get('health_claims', [])[:8]) or 'Geen'}
 
 KWALITEITSCERTIFICERINGEN (rij 5 categorie 1):
 {', '.join(quality_certs) or 'Geen'}
@@ -1252,14 +1256,18 @@ Genereer JSON:
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=3500,
+        max_tokens=5000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
     )
     raw = response.content[0].text.strip()
     raw = re.sub(r"```json\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
-    result = json.loads(raw)
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"CONSUMER_OUTPUT JSON ERROR: {e}", flush=True)
+        raise
 
     if unknown_ingredients:
         result.setdefault("highlights", []).append({
