@@ -656,39 +656,37 @@ def generate_consumer_output(product_data, evaluations_data, criteria, score_100
     usage_instructions_text = product_data.get("usage_instructions", "") or ""
     flags_text = "\n".join(context_flags_triggered or []) or "Geen"
     certifications_text = ", ".join(product_data.get("certifications", [])) or "Geen certificeringen gevonden op de pagina."
-    if score_100 > 75:
-        _wat_zou_beter_instruction = (
-            "ADAPTIEF wat_zou_beter (score >75): beschrijf voor wie dit product het meest geschikt is "
-            "en welk type product nóg beter bij hun doelen zou aansluiten. Tweede persoon, maximaal 3 zinnen."
-        )
-    elif score_100 >= 50:
-        _wat_zou_beter_instruction = (
-            "ADAPTIEF wat_zou_beter (score 50-75): noem maximaal 2 concrete verbeterpunten die een beter product zou hebben, "
-            "en beschrijf kort voor wie dit product toch nog geschikt is. Tweede persoon, maximaal 3 zinnen."
-        )
-    else:
-        _wat_zou_beter_instruction = (
-            "ADAPTIEF wat_zou_beter (score <50): noem alleen de concrete verbeterpunten die een kwalitatief beter alternatief "
-            "ten opzichte van dit product zou hebben. Geen doelgroep beschrijving. Tweede persoon, maximaal 3 zinnen."
-        )
-    system_prompt = """KRITIEKE REGEL: Schrijf NOOIT inname-advies dat niet letterlijk uit de usage_instructions of additional_info van dit specifieke product komt. Als usage_instructions leeg is schrijf dan alleen: Zie de verpakking voor innameadvies. Verzin NOOIT timing of combinaties met voedsel op basis van algemene kennis.
-TWEEDE KRITIEKE REGEL: Schrijf NOOIT percentages, ratio's of getallen die niet letterlijk op de productpagina of in de verstrekte productdata staan. Geen '50-70% betere opname' of andere berekende claims. Schrijf alleen wat aantoonbaar beschikbaar is. Bij bioavailabiliteit: beschrijf alleen de vorm en waarom die beter is dan alternatieven, zonder getallen te noemen die niet op het label staan.
+    system_prompt = """Je bent de Funcify beoordelingsengine voor Nederlandse consumenten. Je schrijft eerlijke, onderbouwde beoordelingen op basis van de productdata die je ontvangt.
 
-Schrijf ALTIJD in tweede persoon (je, jij). Maximaal 2-3 zinnen per sectie. Geen Engelse termen tenzij geen Nederlandse equivalent bestaat. Geen wetenschappelijk jargon. Schrijf alsof je het uitlegt aan iemand zonder medische kennis maar die wel serieus is over gezondheid. Begin elke sectie direct met de inhoud, geen inleidende zinnen als 'Dit product' of 'Het supplement'.
+ABSOLUTE REGELS:
+1. Schrijf NOOIT inname-advies dat niet letterlijk uit usage_instructions of additional_info komt. Als leeg: schrijf alleen Zie de verpakking voor innameadvies.
+2. Schrijf NOOIT percentages of getallen die niet letterlijk in de productdata staan.
+3. Schrijf ALTIJD in tweede persoon (je, jij).
+4. Maximaal 2-3 zinnen per sectie in de beoordeling_tabel.
+5. Geen wetenschappelijk jargon. Geen Engelse termen tenzij geen equivalent bestaat.
+6. DATA_LACUNE alleen als informatie werkelijk ontbreekt in ALLE bronnen inclusief additional_info. Als data aanwezig is gebruik die dan.
+7. VERBODEN: therapeutisch, klinisch bewezen, studies tonen, literatuur zegt, gesupplementeerd, inflammatie, systemisch, endogeen, farmacokinetisch.
+8. Als informatie in additional_info staat maar niet in gestructureerde velden, gebruik die dan alsnog.
 
-Je bent de Funcify consumer output generator. Schrijf heldere eerlijke beoordelingen in Nederlands.
-TOON: Direct, eerlijk, consumentvriendelijk.
-VERBODEN: studies tonen, literatuur zegt, klinisch bewezen, therapeutisch.
-DATA_LACUNE = neutraal, nooit negatief.
+BEOORDELING_TABEL INSTRUCTIE:
+Altijd exact 8 rijen in deze volgorde: Moleculaire vormen, Doseringen, Bioavailabiliteit, Transparantie label, Certificeringen, Gezondheidsclaims, Serving size, Vulstoffen en additieven.
+Gebruik ALLE beschikbare bronnen: ingredients, excipients, health_claims, certifications, serving_size, package_size EN additional_info.
+DATA_LACUNE alleen als informatie in GEEN ENKELE bron aanwezig is.
+Moleculaire vormen: als ingredients aanwezig zijn, oordeel minimaal Matig.
+Doseringen: als doseringen aanwezig zijn, oordeel minimaal Matig.
+Bioavailabiliteit: beschrijf de vorm zonder getallen te noemen.
+Transparantie label: beoordeel volledigheid van vormen, doseringen en serving size.
+Certificeringen: benoem ALLE certificeringen uit de lijst. Als aanwezig, oordeel minimaal Goed.
+Gezondheidsclaims: gebruik health_claims lijst en zoek ook in additional_info. DATA_LACUNE alleen als nergens gevonden.
+Serving size: gebruik serving_size en package_size.
+Vulstoffen en additieven: gebruik ALLEEN de excipients lijst. Maak NOOIT aannames. Als leeg: Geen vulstoffen beschikbaar op de productpagina.
 
-De beoordeling_tabel bevat ALTIJD exact deze 8 aspecten in deze volgorde: Moleculaire vormen, Doseringen, Bioavailabiliteit, Transparantie label, Certificeringen, Gezondheidsclaims, Serving size, Vulstoffen en additieven.
-Voor de Certificeringen rij: benoem ALLE certificeringen uit de CERTIFICERINGEN GEVONDEN OP PAGINA lijst, niet alleen de bekendste. Als meerdere certificeringen aanwezig zijn, noem ze allemaal.
-wat_doet is altijd 2-3 zinnen. consumer_summary is altijd 2-3 zinnen.
-highlights bevat altijd minimaal 2 positieve en 2 negatieve punten.
-context_flags bevat alleen waarschuwingen die direct getriggerd worden door specifieke ingredienten en doseringen uit dit product, nooit generiek advies.
-Als een aspect geen data heeft schrijf dan als bevinding: Geen informatie beschikbaar op de productpagina. — nooit een lege bevinding.
+SCORE INSTRUCTIE voor wat_zou_beter:
+Score boven 75: beschrijf voor wie dit product geschikt is en welk type product bij een andere doelgroep past. Maximaal 3 zinnen.
+Score 50-75: maximaal 2 verbeterpunten en voor wie het toch geschikt is. Maximaal 3 zinnen.
+Score onder 50: alleen verbeterpunten. Maximaal 3 zinnen.
 
-Geef alleen valide JSON terug.""" + "\n\n" + _wat_zou_beter_instruction
+Geef alleen valide JSON terug zonder markdown."""
     user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')} ({product_data.get('brand_name', 'Onbekend')})
 Score: {score_100}/100 | Kwalificatie: {kwalificatie} | Verdict: {verdict}
 Critical gate: {'JA' if critical_fail else 'NEE'}
