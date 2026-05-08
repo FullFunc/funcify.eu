@@ -607,12 +607,12 @@ def fetch_with_scrapingbee(url):
                 "api_key": api_key,
                 "url": url,
                 "render_js": "true",
-                "wait": "8000",
+                "wait": "4000",
                 "block_ads": "true",
                 "block_resources": "true",
                 "country_code": "nl",
             },
-            timeout=90,
+            timeout=45,
         )
         response.raise_for_status()
         content = response.content
@@ -630,13 +630,13 @@ def fetch_with_scrapingbee(url):
                 "api_key": api_key,
                 "url": url,
                 "render_js": "true",
-                "wait": "8000",
+                "wait": "4000",
                 "block_ads": "true",
                 "block_resources": "true",
                 "premium_proxy": "true",
                 "country_code": "nl",
             },
-            timeout=90,
+            timeout=45,
         )
         response.raise_for_status()
         content = response.content
@@ -1005,6 +1005,7 @@ def determine_verdict(score_pct, critical_fail):
 def evaluate_criteria_with_claude(product_data, criteria, product_type, url=""):
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
+    # Filter relevante criteria
     relevant = []
     for c in criteria:
         applies = c["applies_to"]
@@ -1012,21 +1013,15 @@ def evaluate_criteria_with_claude(product_data, criteria, product_type, url=""):
                 (applies == "SPECIFIC" and product_type != "DEFAULT")):
             relevant.append(c)
 
-    core_criteria = [c for c in relevant if c["source"] == "core"][:60]
-    module_criteria = [c for c in relevant if c["source"] == "module"][:25]
-    all_relevant = core_criteria + module_criteria
+    core_criteria = [c for c in relevant if c["source"] == "core"]
+    module_criteria = [c for c in relevant if c["source"] == "module"]
 
-    if not all_relevant:
+    if not core_criteria and not module_criteria:
         print("GEEN CRITERIA BESCHIKBAAR", flush=True)
         return {"evaluations": [], "key_strengths": [],
                 "key_weaknesses": [], "inferior_forms_found": []}, []
 
-    criteria_text = "\n".join([
-        f"{i+1}. [{c['category'][:30]}] {c['criterion'][:80]} "
-        f"(weight={c['weight']}, critical={'JA' if c['critical'] else 'NEE'})"
-        for i, c in enumerate(all_relevant)
-    ])
-
+    # Gedeelde productcontext
     ingredients_text = "\n".join([
         f"- {i.get('name','')}: {i.get('amount','?')} "
         f"{i.get('unit','')} (vorm: {i.get('form','niet vermeld')})"
@@ -1034,50 +1029,63 @@ def evaluate_criteria_with_claude(product_data, criteria, product_type, url=""):
         if i.get("type") != "vul-additief"
     ])
 
+    product_context = f"""Product: {product_data.get('product_name','Onbekend')}
+Merk: {product_data.get('brand_name','Onbekend')}
+Type: {product_type}
+Serving size: {product_data.get('serving_size','onbekend')}
+Verpakking: {product_data.get('package_size','onbekend')}
+Prijs: {product_data.get('price','onbekend')}
+
+ACTIEVE INGREDIENTEN:
+{ingredients_text or 'Geen ingredienten gevonden'}
+
+EXCIPIENTS:
+{chr(10).join(str(e.get('name','')) for e in product_data.get('excipients',[])[:20]) or 'Geen'}
+
+CERTIFICERINGEN:
+{', '.join(product_data.get('certifications',[])) or 'Geen'}
+
+GEZONDHEIDSCLAIMS:
+{chr(10).join(product_data.get('health_claims',[])[:8]) or 'Geen'}
+
+AANVULLENDE INFO:
+{product_data.get('additional_info','')[:500]}"""
+
     system_prompt = """Je bent de Funcify scoring engine.
 
 SCORING REGELS — absoluut:
 - Pass=1: bewijs aanwezig EN criterium gehaald
-- Pass=0: bewijs aanwezig EN criterium NIET gehaald (bewezen falen)
-- Pass=-1: informatie niet beschikbaar (DATA-LACUNE, score-neutraal)
+- Pass=0: bewijs aanwezig EN criterium NIET gehaald
+- Pass=-1: informatie niet beschikbaar — score-neutraal
 - Pass=-1 activeert NOOIT een Critical Gate
 - Alleen Pass=0 met EXACT of AFGELEID confidence activeert Critical Gate
 - Ontbrekende data is ALTIJD Pass=-1, nooit Pass=0
 
 DATA QUALITY:
 - EXACT: letterlijk op label of pagina vermeld
-- AFGELEID: logisch af te leiden uit beschikbare data
+- AFGELEID: logisch af te leiden
 - ONVOLLEDIG: deels beschikbaar
 - NIET_GEVONDEN: niet aangetroffen
 
-Geef alleen valide JSON terug."""
+Geef alleen valide JSON terug zonder markdown."""
 
-    user_prompt = f"""Product: {product_data.get('product_name', 'Onbekend')}
-Merk: {product_data.get('brand_name', 'Onbekend')}
-Type: {product_type}
-Serving size: {product_data.get('serving_size', 'onbekend')}
-Verpakking: {product_data.get('package_size', 'onbekend')}
-Prijs: {product_data.get('price', 'onbekend')}
+    all_evaluations = []
+    all_strengths = []
+    all_weaknesses = []
+    all_inferior = []
+    offset = 0
 
-ACTIEVE INGREDIENTEN:
-{ingredients_text or 'Geen ingredienten gevonden'}
+    # Call 1: core criteria
+    if core_criteria:
+        criteria_text = "\n".join([
+            f"{i+1}. [{c['category'][:30]}] {c['criterion'][:80]} "
+            f"(weight={c['weight']}, critical={'JA' if c['critical'] else 'NEE'})"
+            for i, c in enumerate(core_criteria)
+        ])
 
-EXCIPIENTS:
-{chr(10).join(str(e.get('name', '')) for e in product_data.get('excipients', [])[:20]) or 'Geen'}
+        user_prompt = f"""{product_context}
 
-GEZONDHEIDSCLAIMS:
-{chr(10).join(product_data.get('health_claims', [])[:10]) or 'Geen'}
-
-CERTIFICERINGEN:
-{', '.join(product_data.get('certifications', [])) or 'Geen'}
-
-WAARSCHUWINGEN OP LABEL:
-{chr(10).join(product_data.get('warnings', [])[:5]) or 'Geen'}
-
-AANVULLENDE INFO:
-{product_data.get('additional_info', '')[:2000]}
-
-CRITERIA TE EVALUEREN:
+CRITERIA TE EVALUEREN (CORE — {len(core_criteria)} stuks):
 {criteria_text}
 
 Geef terug als JSON:
@@ -1095,26 +1103,87 @@ Geef terug als JSON:
   "inferior_forms_found": ["inferieure vormen indien aanwezig"]
 }}"""
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=4000,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
-    )
-    raw = response.content[0].text.strip()
-    raw = re.sub(r"```json\s*", "", raw)
-    raw = re.sub(r"```\s*", "", raw)
-    try:
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if not json_match:
-            print("CRITERIA_EVAL ERROR: geen JSON object gevonden", flush=True)
-            raise ValueError("Geen JSON object in response")
-        result = json.loads(json_match.group(0))
-    except json.JSONDecodeError as e:
-        print(f"CRITERIA_EVAL JSON ERROR: {e}", flush=True)
-        raise
-    print(f"EVALUATIE: {len(result.get('evaluations', []))} criteria gescoord", flush=True)
-    return result, all_relevant
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=6000,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            raw = response.content[0].text.strip()
+            raw = re.sub(r"```json\s*", "", raw)
+            raw = re.sub(r"```\s*", "", raw)
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(0))
+                evals = result.get("evaluations", [])
+                all_evaluations.extend(evals)
+                all_strengths = result.get("key_strengths", [])
+                all_weaknesses = result.get("key_weaknesses", [])
+                all_inferior = result.get("inferior_forms_found", [])
+                offset = len(core_criteria)
+                print(f"CORE EVALUATIE: {len(evals)} criteria gescoord", flush=True)
+        except Exception as e:
+            print(f"CORE EVALUATIE ERROR: {e}", flush=True)
+
+    # Call 2: module criteria
+    if module_criteria:
+        criteria_text = "\n".join([
+            f"{offset+i+1}. [{c['category'][:30]}] {c['criterion'][:80]} "
+            f"(weight={c['weight']}, critical={'JA' if c['critical'] else 'NEE'})"
+            for i, c in enumerate(module_criteria)
+        ])
+
+        user_prompt = f"""{product_context}
+
+CRITERIA TE EVALUEREN (MODULE {product_type} — {len(module_criteria)} stuks):
+{criteria_text}
+
+Geef terug als JSON:
+{{
+  "evaluations": [
+    {{
+      "criterion_index": {offset+1},
+      "pass_value": 1,
+      "evidence": "korte uitleg max 1 zin",
+      "data_quality": "EXACT|AFGELEID|ONVOLLEDIG|NIET_GEVONDEN"
+    }}
+  ],
+  "key_strengths": ["aanvullende sterke punten specifiek voor {product_type}"],
+  "key_weaknesses": ["aanvullende zwakke punten specifiek voor {product_type}"],
+  "inferior_forms_found": []
+}}"""
+
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=4000,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            raw = response.content[0].text.strip()
+            raw = re.sub(r"```json\s*", "", raw)
+            raw = re.sub(r"```\s*", "", raw)
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(0))
+                evals = result.get("evaluations", [])
+                all_evaluations.extend(evals)
+                all_strengths += result.get("key_strengths", [])
+                all_weaknesses += result.get("key_weaknesses", [])
+                print(f"MODULE EVALUATIE: {len(evals)} criteria gescoord", flush=True)
+        except Exception as e:
+            print(f"MODULE EVALUATIE ERROR: {e}", flush=True)
+
+    all_relevant = core_criteria + module_criteria
+    print(f"TOTAAL EVALUATIE: {len(all_evaluations)} van {len(all_relevant)} criteria", flush=True)
+
+    return {
+        "evaluations": all_evaluations,
+        "key_strengths": all_strengths[:3],
+        "key_weaknesses": all_weaknesses[:3],
+        "inferior_forms_found": all_inferior
+    }, all_relevant
 
 # ═══════════════════════════════════════════════
 # DEEL 10 — CONSUMER OUTPUT GENERATIE
