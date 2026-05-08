@@ -18,6 +18,27 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
+try:
+    import redis
+    from rq import Queue
+    from rq.job import Job
+    HAS_REDIS = True
+except ImportError:
+    HAS_REDIS = False
+
+# Redis verbinding
+def get_redis_connection():
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url or not HAS_REDIS:
+        return None
+    try:
+        conn = redis.from_url(redis_url, socket_connect_timeout=5)
+        conn.ping()
+        return conn
+    except Exception as e:
+        print(f"REDIS ERROR: {e}", flush=True)
+        return None
+
 app = Flask(__name__)
 CORS(app, origins=["https://funcify.eu", "https://fullfunc.github.io"])
 
@@ -1312,45 +1333,31 @@ def health():
     }), 200
 
 
-@app.route("/scrape", methods=["POST"])
-def scrape():
-    data = request.get_json(silent=True) or {}
-    url = str(data.get("url", "")).strip()
-    if not url:
-        return jsonify({"error": "URL required"}), 400
-
+def scrape_and_score(url):
+    """
+    Volledige scraping en scoring pipeline.
+    Wordt uitgevoerd door de RQ worker op de achtergrond.
+    Geen timeout limiet — ScrapingBee krijgt alle tijd.
+    """
     product_data = {}
     page_text = ""
 
+    # Laag 1: ophalen
     try:
         soup, page_text = fetch_with_scrapingbee(url)
         product_data = scrape_product(soup, url)
         product_data["_source"] = "scraper"
+        print(f"WORKER SCRAPE: {len(page_text)} tekens opgehaald", flush=True)
     except Exception as e:
-        print(f"SCRAPE ERROR: {e}", flush=True)
+        print(f"WORKER SCRAPE ERROR: {e}", flush=True)
         product_data["_source"] = "error"
 
+    # Laag 2: Claude parser
     try:
         product_data = extract_with_claude(url, page_text, product_data)
+        print(f"WORKER EXTRACT: {len(product_data.get('ingredients', []))} ingrediënten", flush=True)
     except Exception as e:
-        print(f"SCRAPE_EXTRACT ERROR: {e}", flush=True)
-
-    product_data["product_name"] = str(product_data.get("product_name") or "Onbekend")
-    product_data["brand_name"] = str(product_data.get("brand_name") or "Onbekend")
-    product_data["ingredients"] = product_data.get("ingredients") or []
-    product_data["active_ingredients"] = product_data.get("active_ingredients") or []
-    product_data["excipients"] = product_data.get("excipients") or []
-    product_data["health_claims"] = product_data.get("health_claims") or []
-    product_data["certifications"] = product_data.get("certifications") or []
-    product_data["warnings"] = product_data.get("warnings") or []
-    product_data["url"] = url
-
-    return jsonify(product_data)
-
-
-@app.route("/score", methods=["POST"])
-def score():
-    product_data = request.get_json(silent=True) or {}
+        print(f"WORKER EXTRACT ERROR: {e}", flush=True)
 
     # Verdedigingslaag
     product_data["product_name"] = str(product_data.get("product_name") or "Onbekend")
@@ -1360,13 +1367,14 @@ def score():
     product_data["excipients"] = product_data.get("excipients") or []
     product_data["health_claims"] = product_data.get("health_claims") or []
     product_data["certifications"] = product_data.get("certifications") or []
+    product_data["warnings"] = product_data.get("warnings") or []
     product_data["serving_size"] = str(product_data.get("serving_size") or "")
     product_data["usage_instructions"] = str(product_data.get("usage_instructions") or "")
     product_data["package_size"] = str(product_data.get("package_size") or "")
     product_data["price"] = str(product_data.get("price") or "")
     product_data["additional_info"] = str(product_data.get("additional_info") or "")
-    product_data["warnings"] = product_data.get("warnings") or []
     product_data["problem_ids"] = product_data.get("problem_ids") or []
+    product_data["url"] = url
 
     for ing in product_data["ingredients"]:
         ing["name"] = str(ing.get("name") or "")
@@ -1379,23 +1387,20 @@ def score():
             except (ValueError, TypeError):
                 ing["amount"] = None
 
-    url = str(product_data.get("url") or "")
-    product_data["url"] = url
-
     # Stap 1: producttype
     try:
         product_type = detect_product_type(product_data)
-        print(f"STAP1: producttype = {product_type}", flush=True)
+        print(f"WORKER STAP1: producttype = {product_type}", flush=True)
     except Exception as e:
-        print(f"STAP1 ERROR: {e}", flush=True)
+        print(f"WORKER STAP1 ERROR: {e}", flush=True)
         product_type = "DEFAULT"
 
     # Stap 2: complexiteit en prijs
     try:
-        active_ings = (
-            product_data.get("active_ingredients") or
-            product_data.get("ingredients") or []
-        )
+        active_ings = product_data.get("active_ingredients") or [
+            i for i in product_data.get("ingredients", [])
+            if i.get("type") != "vul-additief"
+        ]
         active_count = len(active_ings)
         if active_count <= 2:
             tier = "Single"
@@ -1417,9 +1422,9 @@ def score():
             product_data.get("serving_size", "")
         )
         intake_advice = get_intake_advice(product_data)
-        print(f"STAP2: tier={tier}, ppd={price_per_day}", flush=True)
+        print(f"WORKER STAP2: tier={tier}, ppd={price_per_day}", flush=True)
     except Exception as e:
-        print(f"STAP2 ERROR: {e}", flush=True)
+        print(f"WORKER STAP2 ERROR: {e}", flush=True)
         tier = "Single"
         price_per_day = ""
         price_per_gram = ""
@@ -1427,28 +1432,27 @@ def score():
 
     # Stap 3: context flags
     try:
-        active_ings = (
-            product_data.get("active_ingredients") or
-            [i for i in product_data.get("ingredients", [])
-             if i.get("type") != "vul-additief"]
-        )
+        active_ings = product_data.get("active_ingredients") or [
+            i for i in product_data.get("ingredients", [])
+            if i.get("type") != "vul-additief"
+        ]
         flags = evaluate_context_flags(active_ings)
         flags += evaluate_cofactor_checks(active_ings)
         flags.sort(key=lambda f: SEVERITY_ORDER.get(f.get("severity", "Info"), 4))
-        print(f"STAP3: {len(flags)} flags getriggerd", flush=True)
+        print(f"WORKER STAP3: {len(flags)} flags", flush=True)
     except Exception as e:
-        print(f"STAP3 ERROR: {e}", flush=True)
+        print(f"WORKER STAP3 ERROR: {e}", flush=True)
         flags = []
 
     # Stap 4: criteria evaluatie
     try:
         criteria = _cache.get("criteria", [])
-        print(f"STAP4: {len(criteria)} criteria geladen uit cache", flush=True)
+        print(f"WORKER STAP4: {len(criteria)} criteria in cache", flush=True)
         eval_data, relevant_criteria = evaluate_criteria_with_claude(
             product_data, criteria, product_type, url
         )
     except Exception as e:
-        print(f"STAP4 ERROR: {e}", flush=True)
+        print(f"WORKER STAP4 ERROR: {e}", flush=True)
         eval_data = {
             "evaluations": [], "key_strengths": [],
             "key_weaknesses": [], "inferior_forms_found": []
@@ -1460,16 +1464,18 @@ def score():
         score_pct, critical_fail, non_verifiable = calculate_score(
             eval_data, relevant_criteria, product_type
         )
-        score_100, kwalificatie, verdict = determine_verdict(score_pct, critical_fail)
+        score_100, kwalificatie, verdict = determine_verdict(
+            score_pct, critical_fail
+        )
         evals = eval_data.get("evaluations", [])
         exact_count = sum(
             1 for e in evals
             if e.get("data_quality", "").upper() == "EXACT"
         )
         confidence = exact_count / len(evals) if evals else 0.0
-        print(f"STAP5: score={score_100}, critical={critical_fail}", flush=True)
+        print(f"WORKER STAP5: score={score_100}, critical={critical_fail}", flush=True)
     except Exception as e:
-        print(f"STAP5 ERROR: {e}", flush=True)
+        print(f"WORKER STAP5 ERROR: {e}", flush=True)
         score_100 = 0
         kwalificatie = "Onbekend"
         verdict = "Niet beschikbaar"
@@ -1485,7 +1491,7 @@ def score():
             critical_fail, context_flags_triggered=flags
         )
     except Exception as e:
-        print(f"STAP6 ERROR: {e}", flush=True)
+        print(f"WORKER STAP6 ERROR: {e}", flush=True)
         output = {
             "wat_doet": "Beoordeling tijdelijk niet beschikbaar.",
             "beoordeling_tabel": [],
@@ -1501,25 +1507,20 @@ def score():
     try:
         output = simplify_jargon(output)
     except Exception as e:
-        print(f"STAP7 ERROR: {e}", flush=True)
+        print(f"WORKER STAP7 ERROR: {e}", flush=True)
 
     # Certificeringen splitsen
     try:
         all_certs = product_data.get("certifications", [])
-        q_certs = [
-            c for c in all_certs
-            if any(q in str(c).lower() for q in QUALITY_CERT_LIST)
-        ]
-        s_certs = [
-            c for c in all_certs
-            if any(s in str(c).lower() for s in SUSTAINABILITY_CERT_LIST)
-        ]
+        q_certs = [c for c in all_certs if any(q in str(c).lower() for q in QUALITY_CERT_LIST)]
+        s_certs = [c for c in all_certs if any(s in str(c).lower() for s in SUSTAINABILITY_CERT_LIST)]
     except Exception as e:
-        print(f"CERTS ERROR: {e}", flush=True)
+        print(f"WORKER CERTS ERROR: {e}", flush=True)
         q_certs = []
         s_certs = []
 
-    response_body = {
+    # Resultaat samenstellen
+    result = {
         "product_name": product_data.get("product_name", "Onbekend"),
         "brand": product_data.get("brand_name", "Onbekend"),
         "score": score_100,
@@ -1545,7 +1546,63 @@ def score():
         **output
     }
 
-    return jsonify(response_body)
+    print(f"WORKER KLAAR: score={score_100}", flush=True)
+    return result
+
+
+@app.route("/scrape", methods=["POST"])
+def scrape():
+    data = request.get_json(silent=True) or {}
+    url = str(data.get("url", "")).strip()
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+
+    # Probeer Redis queue
+    conn = get_redis_connection()
+    if conn and HAS_REDIS:
+        try:
+            q = Queue(connection=conn, default_timeout=300)
+            job = q.enqueue(scrape_and_score, url)
+            print(f"QUEUE: job {job.id} aangemaakt voor {url}", flush=True)
+            return jsonify({
+                "job_id": job.id,
+                "status": "queued"
+            })
+        except Exception as e:
+            print(f"QUEUE ERROR: {e}, fallback naar synchroon", flush=True)
+
+    # Fallback: synchrone verwerking als Redis niet beschikbaar is
+    print("SCRAPE: synchrone verwerking (geen Redis)", flush=True)
+    result = scrape_and_score(url)
+    result["job_id"] = "sync"
+    result["status"] = "completed"
+    return jsonify(result)
+
+
+@app.route("/result/<job_id>", methods=["GET"])
+def get_result(job_id):
+    """Poll endpoint voor job resultaat."""
+
+    # Sync fallback had geen echte job_id
+    if job_id == "sync":
+        return jsonify({"status": "completed"})
+
+    conn = get_redis_connection()
+    if not conn or not HAS_REDIS:
+        return jsonify({"status": "error", "error": "Redis niet beschikbaar"}), 500
+
+    try:
+        job = Job.fetch(job_id, connection=conn)
+        if job.is_finished:
+            result = job.result
+            result["status"] = "completed"
+            return jsonify(result)
+        elif job.is_failed:
+            return jsonify({"status": "failed", "error": str(job.exc_info)}), 500
+        else:
+            return jsonify({"status": "processing"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 if __name__ == "__main__":
