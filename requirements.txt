@@ -8,3 +8,5 @@ gunicorn
 python-docx
 openpyxl
 playwright
+redis
+rq
