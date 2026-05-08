@@ -1557,6 +1557,7 @@ def score():
     response_body = {
         "product_name": product_data.get("product_name", "Onbekend"),
         "brand": product_data.get("brand_name", "Onbekend"),
+        "brand_name": product_data.get("brand_name", "Onbekend"),
         "score": score_100,
         "kwalificatie": kwalificatie,
         "verdict": verdict,
@@ -1594,7 +1595,7 @@ def scrape():
     conn = get_redis_connection()
     if conn and HAS_REDIS:
         try:
-            q = Queue(connection=conn, default_timeout=300)
+            q = Queue(connection=conn, default_timeout=600)
             job = q.enqueue(scrape_only, url)
             print(f"QUEUE: job {job.id} aangemaakt voor {url}", flush=True)
             return jsonify({
@@ -1627,7 +1628,7 @@ def get_result(job_id):
     try:
         job = Job.fetch(job_id, connection=conn)
         if job.is_finished:
-            result = job.result
+            result = job.result.copy()
             result["status"] = "completed"
             return jsonify(result)
         elif job.is_failed:

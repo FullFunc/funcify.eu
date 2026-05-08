@@ -1474,30 +1474,41 @@ function startScan() {
     if (currentStep < 2 && !advanceStep()) clearInterval(stepInterval);
   }, 3000);
 
-  function pollResult(jobId) {
-    return new Promise((resolve, reject) => {
-      const timer = setInterval(() => {
-        fetch(FUNCIFY_CONFIG.scraperUrl + '/result/' + jobId)
-          .then(res => {
-            if (!res.ok) throw new Error('Poll fout: ' + res.status);
-            return res.json();
-          })
-          .then(data => {
-            if (data.status === 'completed') {
-              clearInterval(timer);
-              resolve(data);
-            } else if (data.status === 'failed') {
-              clearInterval(timer);
-              reject(new Error('Job mislukt op server'));
-            }
-            // status === 'processing' → wacht volgende poll
-          })
-          .catch(err => {
-            clearInterval(timer);
-            reject(err);
-          });
-      }, 3000);
-    });
+  async function pollResult(jobId) {
+    const maxAttempts = 60;
+    const pollInterval = 3000;
+    const maxWaitMs = 180000;
+    const startTime = Date.now();
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      if (Date.now() - startTime > maxWaitMs) {
+        throw new Error('Timeout: verwerking duurde te lang');
+      }
+
+      await new Promise(r => setTimeout(r, pollInterval));
+      attempts++;
+
+      try {
+        const res = await fetch(FUNCIFY_CONFIG.engineUrl + '/result/' + jobId);
+        if (!res.ok) throw new Error('Poll fout: ' + res.status);
+        const data = await res.json();
+
+        if (data.status === 'completed') {
+          return data;
+        } else if (data.status === 'failed' || data.status === 'error') {
+          throw new Error(data.error || 'Verwerking mislukt');
+        }
+        // status === 'processing': doorgaan met pollen
+      } catch (err) {
+        if (attempts >= maxAttempts || Date.now() - startTime > maxWaitMs) {
+          throw err;
+        }
+        // Tijdelijke netwerkfout: doorgaan met pollen
+        console.warn('Poll poging ' + attempts + ' mislukt:', err.message);
+      }
+    }
+    throw new Error('Timeout: maximaal aantal pogingen bereikt');
   }
 
   fetch(FUNCIFY_CONFIG.scraperUrl + '/scrape', {
