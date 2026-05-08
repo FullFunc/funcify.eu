@@ -1067,6 +1067,280 @@
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
   }
+
+  /* ── INTELLIGENCE SCOREKAART ── */
+  .scorecard {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 32px;
+    padding: 36px 40px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    align-items: start;
+  }
+
+  .scorecard-left {}
+
+  .scorecard-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    color: var(--grey-400);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .scorecard-brand {
+    font-size: 13px;
+    color: rgba(255,255,255,0.5);
+    margin-bottom: 4px;
+    font-family: var(--mono);
+    letter-spacing: 0.05em;
+  }
+
+  .scorecard-name {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    margin-bottom: 20px;
+  }
+
+  .scorecard-score-row {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+
+  .scorecard-score-number {
+    font-family: var(--mono);
+    font-size: 56px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .scorecard-score-number.elite { color: var(--green); }
+  .scorecard-score-number.good { color: #7CB342; }
+  .scorecard-score-number.moderate { color: var(--amber); }
+  .scorecard-score-number.poor { color: var(--red); }
+
+  .scorecard-score-denom {
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--grey-400);
+  }
+
+  .scorecard-verdict-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .scorecard-kwalificatie {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--white);
+  }
+
+  .scorecard-verdict-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 2px;
+  }
+
+  .scorecard-verdict-badge.koopwaardig {
+    background: rgba(0,200,83,0.15);
+    color: var(--green);
+    border: 1px solid rgba(0,200,83,0.3);
+  }
+
+  .scorecard-verdict-badge.context {
+    background: rgba(255,179,0,0.15);
+    color: var(--amber);
+    border: 1px solid rgba(255,179,0,0.3);
+  }
+
+  .scorecard-verdict-badge.afraden {
+    background: rgba(255,59,48,0.15);
+    color: var(--red);
+    border: 1px solid rgba(255,59,48,0.3);
+  }
+
+  .scorecard-summary {
+    font-size: 14px;
+    color: rgba(255,255,255,0.6);
+    line-height: 1.6;
+    max-width: 480px;
+    margin-bottom: 20px;
+  }
+
+  .scorecard-price-row {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: rgba(255,255,255,0.35);
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+
+  .scorecard-why-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--grey-400);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    margin-top: 8px;
+    transition: color 0.2s;
+  }
+
+  .scorecard-why-link:hover { color: var(--white); }
+
+  .scorecard-why-link .why-arrow {
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+
+  .scorecard-why-link.open .why-arrow {
+    transform: rotate(90deg);
+  }
+
+  .scorecard-right {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 180px;
+    padding-top: 8px;
+  }
+
+  .scorecard-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .scorecard-indicator-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--grey-400);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .scorecard-indicator-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .scorecard-indicator-dot.goed { background: var(--green); }
+  .scorecard-indicator-dot.matig { background: var(--amber); }
+  .scorecard-indicator-dot.slecht { background: var(--red); }
+  .scorecard-indicator-dot.ontbreekt { background: var(--grey-600); }
+
+  .scorecard-why-panel {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease;
+    border-top: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+
+  .scorecard-why-panel.open {
+    max-height: 400px;
+  }
+
+  .scorecard-why-inner {
+    padding: 28px 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+
+  .why-section-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--red);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  .why-point {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.7);
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+
+  .why-point-icon {
+    font-size: 12px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .why-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--grey-400);
+    line-height: 1.8;
+    letter-spacing: 0.03em;
+  }
+
+  .why-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .why-meta-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--red);
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 768px) {
+    .scorecard {
+      grid-template-columns: 1fr;
+      padding: 24px;
+      gap: 24px;
+    }
+    .scorecard-right {
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 16px;
+      min-width: unset;
+    }
+    .scorecard-score-number { font-size: 40px; }
+    .scorecard-why-inner {
+      grid-template-columns: 1fr;
+      padding: 20px 24px;
+      gap: 20px;
+    }
+  }
 </style>
 </head>
 <body>
@@ -1174,22 +1448,7 @@
 
   <!-- RESULT -->
   <div class="result-container" id="resultContainer">
-    <div class="result-header">
-      <div class="result-product">
-        <div class="result-brand" id="res-brand">MERK</div>
-        <div class="result-name" id="res-name">Productnaam</div>
-        <div id="res-price-per-unit" style="display:none; margin-top:6px; font-size:13px; color:rgba(255,255,255,0.55);"></div>
-        <div id="res-product-type" style="display:none; margin-top:4px; font-size:12px; color:rgba(255,255,255,0.4); font-family:var(--mono); letter-spacing:0.05em;"></div>
-        <div id="res-price-per-gram" style="display:none; margin-top:2px; font-size:12px; color:rgba(255,255,255,0.4); font-family:var(--mono);"></div>
-        <div style="margin-top:16px; font-size:14px; color:rgba(255,255,255,0.7); line-height:1.7;" id="res-intro"></div>
-      </div>
-      <div class="result-score-block">
-        <div class="score-number" id="res-score">—</div>
-        <div class="score-label">/ 100</div>
-        <div class="score-label" id="res-kwalificatie" style="margin-top:6px; color:var(--white); font-size:12px;"></div>
-        <div class="verdict-badge" id="res-verdict"></div>
-      </div>
-    </div>
+    <div id="scorecard-container"></div>
     <div class="result-body">
 
       <div class="result-section">
@@ -1710,71 +1969,144 @@ function appendHighlight(container, type, tekst) {
 function renderResult(data) {
   const score = data.score || 0;
 
-  // Score kleur
-  const scoreEl = document.getElementById('res-score');
-  scoreEl.textContent = score;
-  scoreEl.className = 'score-number';
-  if (score >= 85) scoreEl.classList.add('elite');
-  else if (score >= 70) scoreEl.classList.add('good');
-  else if (score >= 50) scoreEl.classList.add('moderate');
-  else scoreEl.classList.add('poor');
+  // ── SCOREKAART RENDERING ──
+  const scorecard = document.getElementById('scorecard-container');
+  if (!scorecard) return;
 
-  // Brand — hide if empty or Onbekend
-  const brandEl = document.getElementById('res-brand');
+  // Score kleur klasse
+  const scoreNum = data.score || 0;
+  let scoreClass = 'poor';
+  if (scoreNum >= 85) scoreClass = 'elite';
+  else if (scoreNum >= 70) scoreClass = 'good';
+  else if (scoreNum >= 50) scoreClass = 'moderate';
+
+  // Verdict badge klasse
+  let verdictClass = 'afraden';
+  if (data.verdict === 'Koopwaardig') verdictClass = 'koopwaardig';
+  else if (data.verdict === 'Alleen met context') verdictClass = 'context';
+
+  // Indicator oordelen uit beoordeling_tabel
+  function getIndicatorClass(aspectName) {
+    const tabel = data.beoordeling_tabel || [];
+    const row = tabel.find(r =>
+      (r.aspect || '').toLowerCase().includes(aspectName.toLowerCase())
+    );
+    if (!row) return 'ontbreekt';
+    const o = (row.oordeel || '').toUpperCase();
+    if (o === 'GOED') return 'goed';
+    if (o === 'MATIG') return 'matig';
+    if (o === 'SLECHT') return 'slecht';
+    return 'ontbreekt';
+  }
+
+  const vormClass = getIndicatorClass('vorm');
+  const doseringClass = getIndicatorClass('genoeg');
+  const transparantieClass = getIndicatorClass('duidelijk');
+  const veiligheidClass = getIndicatorClass('gecontroleerd');
+
+  // Prijs info
   const brand = data.brand || data.brand_name || '';
-  if (brand && brand.toLowerCase() !== 'onbekend') {
-    brandEl.textContent = brand;
-    brandEl.style.display = '';
-  } else {
-    brandEl.style.display = 'none';
-  }
-  document.getElementById('res-name').textContent = data.product_name || 'Onbekend product';
+  const priceInfo = [data.price_per_day, data.price_per_gram]
+    .filter(Boolean).join(' · ');
 
-  // Price line: per capsule · stuks · per dag
-  const priceEl = document.getElementById('res-price-per-unit');
-  if (priceEl) {
-    const priceNum = parseFloat((data.price || '').replace(/[^\d.,]/g, '').replace(',', '.'));
-    const pkgMatch = (data.package_size || '').match(/(\d+)/);
-    const pkgCount = pkgMatch ? parseInt(pkgMatch[1]) : 0;
-    if (priceNum > 0 && pkgCount > 0) {
-      const pricePerUnit = '€' + (priceNum / pkgCount).toFixed(2).replace('.', ',');
-      let priceText = pricePerUnit + ' per capsule · ' + data.package_size;
-      if (data.price_per_day) priceText += ' · ' + data.price_per_day;
-      priceEl.textContent = priceText;
-      priceEl.style.display = 'block';
-    } else if (data.price_per_day) {
-      priceEl.textContent = data.price_per_day;
-      priceEl.style.display = 'block';
-    } else {
-      priceEl.style.display = 'none';
-    }
-  }
+  // Why panel inhoud
+  const positief = (data.highlights || [])
+    .filter(h => h.type === 'positief')
+    .slice(0, 3)
+    .map(h => h.tekst.replace('Goed nieuws — ', '').replace('Goed nieuws —', ''));
+  const negatief = (data.highlights || [])
+    .filter(h => h.type === 'negatief')
+    .slice(0, 3)
+    .map(h => h.tekst.replace('Let op — ', '').replace('Let op —', ''));
 
-  const typeEl = document.getElementById('res-product-type');
-  if (typeEl) {
-    const label = data.product_complexity_label || data.product_complexity_tier || '';
-    typeEl.textContent = label ? `Producttype: ${label}` : '';
-    typeEl.style.display = label ? 'block' : 'none';
-  }
+  const criteriaCount = data.criteria_evaluated || 0;
+  const nonVerifiable = data.non_verifiable_count || 0;
+  const confidence = data.confidence || 0;
 
-  const gramEl = document.getElementById('res-price-per-gram');
-  if (gramEl && data.price_per_gram) {
-    gramEl.textContent = data.price_per_gram + ' actief';
-    gramEl.style.display = 'block';
-  } else if (gramEl) {
-    gramEl.style.display = 'none';
-  }
-
-  // consumer_summary (engine) of summary (demo fallback)
-  document.getElementById('res-intro').textContent = data.consumer_summary || data.summary || '';
-  document.getElementById('res-kwalificatie').textContent = data.kwalificatie || '';
-
-  const verdictEl = document.getElementById('res-verdict');
-  verdictEl.textContent = data.verdict || '';
-  verdictEl.className = 'verdict-badge';
-  if (data.verdict === 'Koopwaardig') verdictEl.classList.add('koopwaardig');
-  else if (data.verdict === 'Alleen met context') verdictEl.classList.add('context');
-  else verdictEl.classList.add('afraden');
+  scorecard.innerHTML = `
+    <div class="scorecard">
+      <div class="scorecard-left">
+        ${brand ? `<div class="scorecard-brand">${brand}</div>` : ''}
+        <div class="scorecard-name">${data.product_name || 'Onbekend product'}</div>
+        <div class="scorecard-score-row">
+          <span class="scorecard-score-number ${scoreClass}">${scoreNum}</span>
+          <span class="scorecard-score-denom">/ 100</span>
+          <div class="scorecard-verdict-row" style="margin-bottom:0;">
+            <span class="scorecard-kwalificatie">${data.kwalificatie || ''}</span>
+            <span class="scorecard-verdict-badge ${verdictClass}">${data.verdict || ''}</span>
+          </div>
+        </div>
+        ${data.consumer_summary ?
+          `<div class="scorecard-summary">${data.consumer_summary}</div>` : ''}
+        ${priceInfo ?
+          `<div class="scorecard-price-row">${priceInfo}</div>` : ''}
+        <button class="scorecard-why-link" onclick="toggleWhyPanel(this)"
+          aria-expanded="false">
+          <span>Waarom deze score</span>
+          <span class="why-arrow">→</span>
+        </button>
+      </div>
+      <div class="scorecard-right">
+        <div class="scorecard-indicator">
+          <span class="scorecard-indicator-label">Vorm</span>
+          <span class="scorecard-indicator-dot ${vormClass}"></span>
+        </div>
+        <div class="scorecard-indicator">
+          <span class="scorecard-indicator-label">Dosering</span>
+          <span class="scorecard-indicator-dot ${doseringClass}"></span>
+        </div>
+        <div class="scorecard-indicator">
+          <span class="scorecard-indicator-label">Transparantie</span>
+          <span class="scorecard-indicator-dot ${transparantieClass}"></span>
+        </div>
+        <div class="scorecard-indicator">
+          <span class="scorecard-indicator-label">Veiligheid</span>
+          <span class="scorecard-indicator-dot ${veiligheidClass}"></span>
+        </div>
+      </div>
+    </div>
+    <div class="scorecard-why-panel" id="why-panel">
+      <div class="scorecard-why-inner">
+        <div>
+          <div class="why-section-title">Grootste impact op score</div>
+          ${positief.map(p => `
+            <div class="why-point">
+              <span class="why-point-icon" style="color:var(--green)">✓</span>
+              <span>${p}</span>
+            </div>`).join('')}
+          ${negatief.map(n => `
+            <div class="why-point">
+              <span class="why-point-icon" style="color:var(--red)">⚠</span>
+              <span>${n}</span>
+            </div>`).join('')}
+        </div>
+        <div>
+          <div class="why-section-title">Hoe de score is opgebouwd</div>
+          <div class="why-meta">
+            <div class="why-meta-item">
+              <span class="why-meta-dot"></span>
+              <span>${criteriaCount} criteria gecontroleerd</span>
+            </div>
+            <div class="why-meta-item">
+              <span class="why-meta-dot"></span>
+              <span>${nonVerifiable} criteria niet verifieerbaar</span>
+            </div>
+            <div class="why-meta-item">
+              <span class="why-meta-dot"></span>
+              <span>Betrouwbaarheidsscore: ${Math.round(confidence * 100)}%</span>
+            </div>
+          </div>
+          <p style="font-size:12px; color:var(--grey-600);
+            line-height:1.7; margin-top:16px;">
+            Funcify beoordeelt supplementen op meerdere inhoudelijke
+            criteria waaronder vormkwaliteit, dosering, transparantie
+            en veiligheid. Criteria waarvoor geen data beschikbaar is
+            tellen niet mee in de eindscore.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
 
   document.getElementById('res-wat-doet').textContent = data.wat_doet || '';
 
@@ -1875,6 +2207,16 @@ function showErrorBar(msg) {
 // ── DEMO RESULT ──
 function renderDemoResult() {
   showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');
+}
+
+function toggleWhyPanel(btn) {
+  const panel = document.getElementById('why-panel');
+  const isOpen = panel.classList.contains('open');
+  panel.classList.toggle('open', !isOpen);
+  btn.classList.toggle('open', !isOpen);
+  btn.setAttribute('aria-expanded', !isOpen);
+  const arrow = btn.querySelector('.why-arrow');
+  if (arrow) arrow.textContent = isOpen ? '→' : '↓';
 }
 </script>
 </body>
