@@ -1474,42 +1474,30 @@ function startScan() {
     if (currentStep < 2 && !advanceStep()) clearInterval(stepInterval);
   }, 3000);
 
-  let pollTimer = null;
-
-  function stopAll() {
-    clearInterval(stepInterval);
-    if (pollTimer) clearInterval(pollTimer);
-  }
-
   function pollResult(jobId) {
-    pollTimer = setInterval(() => {
-      fetch(FUNCIFY_CONFIG.scraperUrl + '/result/' + jobId)
-        .then(res => {
-          if (!res.ok) throw new Error('Poll fout: ' + res.status);
-          return res.json();
-        })
-        .then(data => {
-          if (data.status === 'completed') {
-            stopAll();
-            finishAllSteps();
-            setTimeout(() => {
-              resetLoading();
-              renderResult(data);
-            }, 600);
-          } else if (data.status === 'failed') {
-            stopAll();
-            resetLoading();
-            showErrorBar('Analyse mislukt op de server. Probeer opnieuw.');
-          }
-          // status === 'processing' → wacht volgende poll
-        })
-        .catch(err => {
-          stopAll();
-          console.error('Poll mislukt:', err.message);
-          resetLoading();
-          showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');
-        });
-    }, 3000);
+    return new Promise((resolve, reject) => {
+      const timer = setInterval(() => {
+        fetch(FUNCIFY_CONFIG.scraperUrl + '/result/' + jobId)
+          .then(res => {
+            if (!res.ok) throw new Error('Poll fout: ' + res.status);
+            return res.json();
+          })
+          .then(data => {
+            if (data.status === 'completed') {
+              clearInterval(timer);
+              resolve(data);
+            } else if (data.status === 'failed') {
+              clearInterval(timer);
+              reject(new Error('Job mislukt op server'));
+            }
+            // status === 'processing' → wacht volgende poll
+          })
+          .catch(err => {
+            clearInterval(timer);
+            reject(err);
+          });
+      }, 3000);
+    });
   }
 
   fetch(FUNCIFY_CONFIG.scraperUrl + '/scrape', {
@@ -1521,29 +1509,58 @@ function startScan() {
     if (!res.ok) throw new Error('Scraper fout: ' + res.status);
     return res.json();
   })
-  .then(data => {
-    if (data.status === 'completed') {
-      // Sync fallback: resultaat al beschikbaar
-      stopAll();
-      finishAllSteps();
-      setTimeout(() => {
-        resetLoading();
-        renderResult(data);
-      }, 600);
-    } else if (data.job_id) {
-      // Async: start polling
-      clearInterval(stepInterval);
-      markStepsDone(2);
+  .then(async scraperData => {
+    clearInterval(stepInterval);
+    markStepsDone(2);
+
+    // Als scraper direct resultaat geeft (sync fallback)
+    if (scraperData.status === 'completed' && scraperData.score !== undefined) {
+      return scraperData;
+    }
+
+    // Als scraper job_id geeft: poll voor productdata
+    const jobId = scraperData.job_id;
+    if (jobId && jobId !== 'sync') {
+      const productData = await pollResult(jobId);
+
+      // Stuur productdata naar /score voor beoordeling
       const engineInterval = setInterval(() => {
         if (!advanceStep()) clearInterval(engineInterval);
       }, 3000);
-      pollResult(data.job_id);
-    } else {
-      throw new Error('Onverwacht antwoord van server');
+
+      const scoreRes = await fetch(FUNCIFY_CONFIG.engineUrl + '/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(productData)
+      });
+      clearInterval(engineInterval);
+      if (!scoreRes.ok) throw new Error('Engine fout: ' + scoreRes.status);
+      return scoreRes.json();
     }
+
+    // Directe productdata zonder job_id: stuur naar /score
+    const engineInterval2 = setInterval(() => {
+      if (!advanceStep()) clearInterval(engineInterval2);
+    }, 3000);
+
+    const scoreRes2 = await fetch(FUNCIFY_CONFIG.engineUrl + '/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scraperData)
+    });
+    clearInterval(engineInterval2);
+    if (!scoreRes2.ok) throw new Error('Engine fout: ' + scoreRes2.status);
+    return scoreRes2.json();
+  })
+  .then(engineData => {
+    finishAllSteps();
+    setTimeout(() => {
+      resetLoading();
+      renderResult(engineData);
+    }, 600);
   })
   .catch(err => {
-    stopAll();
+    clearInterval(stepInterval);
     console.error('Analyse mislukt:', err.message);
     resetLoading();
     showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');

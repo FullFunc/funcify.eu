@@ -1333,16 +1333,11 @@ def health():
     }), 200
 
 
-def scrape_and_score(url):
+def scrape_only(url):
     """
-    Volledige scraping en scoring pipeline.
-    Wordt uitgevoerd door de RQ worker op de achtergrond.
-    Geen timeout limiet — ScrapingBee krijgt alle tijd.
+    Scraping pipeline — geeft product_data terug.
+    Scoring wordt gedaan door de /score route.
     """
-    # Worker draait in een apart proces — _cache is leeg zonder deze aanroep.
-    if not _cache.get("criteria"):
-        load_all_data()
-
     product_data = {}
     page_text = ""
 
@@ -1391,12 +1386,49 @@ def scrape_and_score(url):
             except (ValueError, TypeError):
                 ing["amount"] = None
 
+    return product_data
+
+
+@app.route("/score", methods=["POST"])
+def score():
+    product_data = request.get_json(silent=True) or {}
+
+    # Verdedigingslaag
+    product_data["product_name"] = str(product_data.get("product_name") or "Onbekend")
+    product_data["brand_name"] = str(product_data.get("brand_name") or "Onbekend")
+    product_data["ingredients"] = product_data.get("ingredients") or []
+    product_data["active_ingredients"] = product_data.get("active_ingredients") or []
+    product_data["excipients"] = product_data.get("excipients") or []
+    product_data["health_claims"] = product_data.get("health_claims") or []
+    product_data["certifications"] = product_data.get("certifications") or []
+    product_data["serving_size"] = str(product_data.get("serving_size") or "")
+    product_data["usage_instructions"] = str(product_data.get("usage_instructions") or "")
+    product_data["package_size"] = str(product_data.get("package_size") or "")
+    product_data["price"] = str(product_data.get("price") or "")
+    product_data["additional_info"] = str(product_data.get("additional_info") or "")
+    product_data["warnings"] = product_data.get("warnings") or []
+    product_data["problem_ids"] = product_data.get("problem_ids") or []
+
+    for ing in product_data["ingredients"]:
+        ing["name"] = str(ing.get("name") or "")
+        ing["form"] = str(ing.get("form") or "")
+        ing["unit"] = str(ing.get("unit") or "")
+        ing["type"] = str(ing.get("type") or "actief")
+        if ing.get("amount") is not None:
+            try:
+                ing["amount"] = float(ing["amount"])
+            except (ValueError, TypeError):
+                ing["amount"] = None
+
+    url = str(product_data.get("url") or "")
+    product_data["url"] = url
+
     # Stap 1: producttype
     try:
         product_type = detect_product_type(product_data)
-        print(f"WORKER STAP1: producttype = {product_type}", flush=True)
+        print(f"STAP1: producttype = {product_type}", flush=True)
     except Exception as e:
-        print(f"WORKER STAP1 ERROR: {e}", flush=True)
+        print(f"STAP1 ERROR: {e}", flush=True)
         product_type = "DEFAULT"
 
     # Stap 2: complexiteit en prijs
@@ -1412,7 +1444,6 @@ def scrape_and_score(url):
             tier = "Multi"
         else:
             tier = "Complex"
-
         price_per_day = calculate_price_per_day(
             product_data.get("price", ""),
             product_data.get("package_size", ""),
@@ -1426,9 +1457,9 @@ def scrape_and_score(url):
             product_data.get("serving_size", "")
         )
         intake_advice = get_intake_advice(product_data)
-        print(f"WORKER STAP2: tier={tier}, ppd={price_per_day}", flush=True)
+        print(f"STAP2: tier={tier}, ppd={price_per_day}", flush=True)
     except Exception as e:
-        print(f"WORKER STAP2 ERROR: {e}", flush=True)
+        print(f"STAP2 ERROR: {e}", flush=True)
         tier = "Single"
         price_per_day = ""
         price_per_gram = ""
@@ -1443,20 +1474,20 @@ def scrape_and_score(url):
         flags = evaluate_context_flags(active_ings)
         flags += evaluate_cofactor_checks(active_ings)
         flags.sort(key=lambda f: SEVERITY_ORDER.get(f.get("severity", "Info"), 4))
-        print(f"WORKER STAP3: {len(flags)} flags", flush=True)
+        print(f"STAP3: {len(flags)} flags", flush=True)
     except Exception as e:
-        print(f"WORKER STAP3 ERROR: {e}", flush=True)
+        print(f"STAP3 ERROR: {e}", flush=True)
         flags = []
 
     # Stap 4: criteria evaluatie
     try:
         criteria = _cache.get("criteria", [])
-        print(f"WORKER STAP4: {len(criteria)} criteria in cache", flush=True)
+        print(f"STAP4: {len(criteria)} criteria geladen uit cache", flush=True)
         eval_data, relevant_criteria = evaluate_criteria_with_claude(
             product_data, criteria, product_type, url
         )
     except Exception as e:
-        print(f"WORKER STAP4 ERROR: {e}", flush=True)
+        print(f"STAP4 ERROR: {e}", flush=True)
         eval_data = {
             "evaluations": [], "key_strengths": [],
             "key_weaknesses": [], "inferior_forms_found": []
@@ -1477,9 +1508,9 @@ def scrape_and_score(url):
             if e.get("data_quality", "").upper() == "EXACT"
         )
         confidence = exact_count / len(evals) if evals else 0.0
-        print(f"WORKER STAP5: score={score_100}, critical={critical_fail}", flush=True)
+        print(f"STAP5: score={score_100}, critical={critical_fail}", flush=True)
     except Exception as e:
-        print(f"WORKER STAP5 ERROR: {e}", flush=True)
+        print(f"STAP5 ERROR: {e}", flush=True)
         score_100 = 0
         kwalificatie = "Onbekend"
         verdict = "Niet beschikbaar"
@@ -1495,7 +1526,7 @@ def scrape_and_score(url):
             critical_fail, context_flags_triggered=flags
         )
     except Exception as e:
-        print(f"WORKER STAP6 ERROR: {e}", flush=True)
+        print(f"STAP6 ERROR: {e}", flush=True)
         output = {
             "wat_doet": "Beoordeling tijdelijk niet beschikbaar.",
             "beoordeling_tabel": [],
@@ -1511,7 +1542,7 @@ def scrape_and_score(url):
     try:
         output = simplify_jargon(output)
     except Exception as e:
-        print(f"WORKER STAP7 ERROR: {e}", flush=True)
+        print(f"STAP7 ERROR: {e}", flush=True)
 
     # Certificeringen splitsen
     try:
@@ -1519,12 +1550,11 @@ def scrape_and_score(url):
         q_certs = [c for c in all_certs if any(q in str(c).lower() for q in QUALITY_CERT_LIST)]
         s_certs = [c for c in all_certs if any(s in str(c).lower() for s in SUSTAINABILITY_CERT_LIST)]
     except Exception as e:
-        print(f"WORKER CERTS ERROR: {e}", flush=True)
+        print(f"CERTS ERROR: {e}", flush=True)
         q_certs = []
         s_certs = []
 
-    # Resultaat samenstellen
-    result = {
+    response_body = {
         "product_name": product_data.get("product_name", "Onbekend"),
         "brand": product_data.get("brand_name", "Onbekend"),
         "score": score_100,
@@ -1550,8 +1580,7 @@ def scrape_and_score(url):
         **output
     }
 
-    print(f"WORKER KLAAR: score={score_100}", flush=True)
-    return result
+    return jsonify(response_body)
 
 
 @app.route("/scrape", methods=["POST"])
@@ -1566,7 +1595,7 @@ def scrape():
     if conn and HAS_REDIS:
         try:
             q = Queue(connection=conn, default_timeout=300)
-            job = q.enqueue(scrape_and_score, url)
+            job = q.enqueue(scrape_only, url)
             print(f"QUEUE: job {job.id} aangemaakt voor {url}", flush=True)
             return jsonify({
                 "job_id": job.id,
@@ -1577,7 +1606,7 @@ def scrape():
 
     # Fallback: synchrone verwerking als Redis niet beschikbaar is
     print("SCRAPE: synchrone verwerking (geen Redis)", flush=True)
-    result = scrape_and_score(url)
+    result = scrape_only(url)
     result["job_id"] = "sync"
     result["status"] = "completed"
     return jsonify(result)
