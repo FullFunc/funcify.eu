@@ -534,7 +534,7 @@
 
   .result-section p {
     font-size: 15px;
-    color: rgba(255,255,255,0.8);
+    color: rgba(255,255,255,0.95);
     line-height: 1.8;
   }
 
@@ -595,7 +595,7 @@
     gap: 12px;
     font-size: 14px;
     line-height: 1.6;
-    color: rgba(255,255,255,0.8);
+    color: rgba(255,255,255,0.95);
   }
 
   .highlight-icon { flex-shrink: 0; font-size: 14px; }
@@ -613,7 +613,7 @@
     border: 1px solid rgba(255,179,0,0.2);
     border-left: 3px solid var(--amber);
     font-size: 14px;
-    color: rgba(255,255,255,0.8);
+    color: rgba(255,255,255,0.95);
     line-height: 1.6;
   }
 
@@ -704,7 +704,7 @@
 
   .criterion-name {
     font-size: 13px;
-    color: rgba(255,255,255,0.8);
+    color: rgba(255,255,255,0.95);
   }
 
   .criterion-weight {
@@ -741,10 +741,17 @@
   }
 
   .coming-card {
-    background: var(--black);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
     padding: 48px;
     position: relative;
     overflow: hidden;
+    transition: background 0.2s, border-color 0.2s;
+  }
+
+  .coming-card:hover {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.15);
   }
 
   .coming-soon-tag {
@@ -777,7 +784,7 @@
   .coming-overlay {
     position: absolute;
     inset: 0;
-    background: rgba(10,10,10,0.4);
+    background: rgba(10,10,10,0.15);
     pointer-events: none;
   }
 
