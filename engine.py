@@ -736,13 +736,7 @@ def extract_with_claude(url, raw_text, product_data):
     """
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-    full_text = raw_text[:15000] if raw_text else ""
-
-    # Debug: zoek waar ingrediënten staan in de volledige tekst
-    for keyword in ["cholecalciferol", "menaquinon", "EPA", "DHA", "vitamine d3"]:
-        pos = raw_text.lower().find(keyword.lower()) if raw_text else -1
-        if pos >= 0:
-            print(f"DEBUG: '{keyword}' gevonden op positie {pos} van {len(raw_text)}", flush=True)
+    full_text = raw_text[:50000] if raw_text else ""
 
     system_prompt = """Je extraheert productinformatie van supplement-paginas
 voor de Funcify beoordelingsengine.
