@@ -790,7 +790,13 @@ Kritische regels:
         raw = response.content[0].text.strip()
         raw = re.sub(r"```json\s*", "", raw)
         raw = re.sub(r"```\s*", "", raw)
-        extracted = json.loads(raw)
+
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not json_match:
+            print("EXTRACT_CLAUDE ERROR: geen JSON object gevonden", flush=True)
+            return product_data
+
+        extracted = json.loads(json_match.group(0))
         print(f"EXTRACT_CLAUDE: {len(extracted.get('ingredients', []))} ingrediënten gevonden", flush=True)
     except Exception as e:
         print(f"EXTRACT_CLAUDE ERROR: {e}", flush=True)
@@ -1078,7 +1084,11 @@ Geef terug als JSON:
     raw = re.sub(r"```json\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
     try:
-        result = json.loads(raw)
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not json_match:
+            print("CRITERIA_EVAL ERROR: geen JSON object gevonden", flush=True)
+            raise ValueError("Geen JSON object in response")
+        result = json.loads(json_match.group(0))
     except json.JSONDecodeError as e:
         print(f"CRITERIA_EVAL JSON ERROR: {e}", flush=True)
         raise
@@ -1264,7 +1274,11 @@ Genereer JSON:
     raw = re.sub(r"```json\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
     try:
-        result = json.loads(raw)
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not json_match:
+            print("CONSUMER_OUTPUT ERROR: geen JSON object gevonden", flush=True)
+            raise ValueError("Geen JSON object in response")
+        result = json.loads(json_match.group(0))
     except json.JSONDecodeError as e:
         print(f"CONSUMER_OUTPUT JSON ERROR: {e}", flush=True)
         raise
