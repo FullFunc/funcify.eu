@@ -1339,6 +1339,10 @@ def scrape_and_score(url):
     Wordt uitgevoerd door de RQ worker op de achtergrond.
     Geen timeout limiet — ScrapingBee krijgt alle tijd.
     """
+    # Worker draait in een apart proces — _cache is leeg zonder deze aanroep.
+    if not _cache.get("criteria"):
+        load_all_data()
+
     product_data = {}
     page_text = ""
 

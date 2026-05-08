@@ -1474,7 +1474,44 @@ function startScan() {
     if (currentStep < 2 && !advanceStep()) clearInterval(stepInterval);
   }, 3000);
 
-  // ── STAP 1: Scraper ──
+  let pollTimer = null;
+
+  function stopAll() {
+    clearInterval(stepInterval);
+    if (pollTimer) clearInterval(pollTimer);
+  }
+
+  function pollResult(jobId) {
+    pollTimer = setInterval(() => {
+      fetch(FUNCIFY_CONFIG.scraperUrl + '/result/' + jobId)
+        .then(res => {
+          if (!res.ok) throw new Error('Poll fout: ' + res.status);
+          return res.json();
+        })
+        .then(data => {
+          if (data.status === 'completed') {
+            stopAll();
+            finishAllSteps();
+            setTimeout(() => {
+              resetLoading();
+              renderResult(data);
+            }, 600);
+          } else if (data.status === 'failed') {
+            stopAll();
+            resetLoading();
+            showErrorBar('Analyse mislukt op de server. Probeer opnieuw.');
+          }
+          // status === 'processing' → wacht volgende poll
+        })
+        .catch(err => {
+          stopAll();
+          console.error('Poll mislukt:', err.message);
+          resetLoading();
+          showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');
+        });
+    }, 3000);
+  }
+
   fetch(FUNCIFY_CONFIG.scraperUrl + '/scrape', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1484,35 +1521,29 @@ function startScan() {
     if (!res.ok) throw new Error('Scraper fout: ' + res.status);
     return res.json();
   })
-  .then(scraperData => {
-    clearInterval(stepInterval);
-    markStepsDone(2);
-
-    // ── STAP 2: Engine ──
-    const engineInterval = setInterval(() => {
-      if (!advanceStep()) clearInterval(engineInterval);
-    }, 3000);
-
-    return fetch(FUNCIFY_CONFIG.engineUrl + '/score', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(scraperData)
-    })
-    .then(res => {
-      clearInterval(engineInterval);
-      if (!res.ok) throw new Error('Engine fout: ' + res.status);
-      return res.json();
-    });
-  })
-  .then(engineData => {
-    finishAllSteps();
-    setTimeout(() => {
-      resetLoading();
-      renderResult(engineData);
-    }, 600);
+  .then(data => {
+    if (data.status === 'completed') {
+      // Sync fallback: resultaat al beschikbaar
+      stopAll();
+      finishAllSteps();
+      setTimeout(() => {
+        resetLoading();
+        renderResult(data);
+      }, 600);
+    } else if (data.job_id) {
+      // Async: start polling
+      clearInterval(stepInterval);
+      markStepsDone(2);
+      const engineInterval = setInterval(() => {
+        if (!advanceStep()) clearInterval(engineInterval);
+      }, 3000);
+      pollResult(data.job_id);
+    } else {
+      throw new Error('Onverwacht antwoord van server');
+    }
   })
   .catch(err => {
-    clearInterval(stepInterval);
+    stopAll();
     console.error('Analyse mislukt:', err.message);
     resetLoading();
     showErrorBar('Analyse tijdelijk niet beschikbaar. Controleer de URL en probeer opnieuw.');
