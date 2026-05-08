@@ -1333,6 +1333,47 @@ def health():
     }), 200
 
 
+@app.route("/test-scrapingbee", methods=["GET"])
+def test_scrapingbee():
+    import time
+    api_key = os.environ.get("SCRAPINGBEE_KEY")
+    if not api_key:
+        print("TEST_SCRAPINGBEE: geen API key gevonden", flush=True)
+        return jsonify({"error": "geen SCRAPINGBEE_KEY"}), 500
+
+    test_url = "https://example.com"
+    print(f"TEST_SCRAPINGBEE: verzoek naar {test_url}", flush=True)
+    start = time.time()
+    try:
+        response = requests.get(
+            "https://app.scrapingbee.com/api/v1/",
+            params={
+                "api_key": api_key,
+                "url": test_url,
+                "render_js": "true",
+                "wait": "1000",
+                "block_resources": "true",
+            },
+            timeout=30,
+        )
+        elapsed_ms = round((time.time() - start) * 1000)
+        print(f"TEST_SCRAPINGBEE: status={response.status_code} tijd={elapsed_ms}ms", flush=True)
+        return jsonify({
+            "status_code": response.status_code,
+            "elapsed_ms": elapsed_ms,
+            "response_size_bytes": len(response.content),
+            "ok": response.ok,
+        })
+    except requests.Timeout:
+        elapsed_ms = round((time.time() - start) * 1000)
+        print(f"TEST_SCRAPINGBEE: TIMEOUT na {elapsed_ms}ms", flush=True)
+        return jsonify({"error": "timeout", "elapsed_ms": elapsed_ms}), 504
+    except Exception as e:
+        elapsed_ms = round((time.time() - start) * 1000)
+        print(f"TEST_SCRAPINGBEE: FOUT na {elapsed_ms}ms — {e}", flush=True)
+        return jsonify({"error": str(e), "elapsed_ms": elapsed_ms}), 500
+
+
 def scrape_only(url):
     """
     Scraping pipeline — geeft product_data terug.
