@@ -987,6 +987,86 @@
     .result-score-block { text-align: left; }
     .disclaimer-bar { padding: 20px; }
   }
+
+  /* ── SCANNER INTELLIGENCE STEPS ── */
+  .scanner-steps {
+    display: flex;
+    gap: 0;
+    margin-top: 28px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding-top: 24px;
+  }
+
+  .scanner-step {
+    flex: 1;
+    padding: 0 20px 0 0;
+    position: relative;
+    cursor: default;
+  }
+
+  .scanner-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    height: 100%;
+    width: 1px;
+    background: rgba(255,255,255,0.06);
+  }
+
+  .scanner-step-number {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--red);
+    letter-spacing: 0.15em;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .scanner-step-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: rgba(255,255,255,0.4);
+    letter-spacing: 0.05em;
+    display: block;
+    line-height: 1.4;
+    transition: color 0.2s;
+  }
+
+  .scanner-step-example {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: rgba(255,255,255,0.0);
+    letter-spacing: 0.04em;
+    display: block;
+    margin-top: 4px;
+    line-height: 1.4;
+    transition: color 0.3s ease, transform 0.3s ease;
+    transform: translateY(4px);
+  }
+
+  .scanner-step:hover .scanner-step-label {
+    color: rgba(255,255,255,0.75);
+  }
+
+  .scanner-step:hover .scanner-step-example {
+    color: rgba(255,59,48,0.7);
+    transform: translateY(0);
+  }
+
+  @media (max-width: 768px) {
+    .scanner-steps {
+      flex-direction: column;
+      gap: 16px;
+    }
+    .scanner-step:not(:last-child)::after {
+      display: none;
+    }
+    .scanner-step {
+      padding: 0 0 16px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+  }
 </style>
 </head>
 <body>
@@ -1048,6 +1128,29 @@
       <button class="scanner-btn" id="scanBtn" onclick="startScan()">
         Analyseer (gratis) →
       </button>
+    </div>
+  </div>
+
+  <div class="scanner-steps">
+    <div class="scanner-step">
+      <span class="scanner-step-number">01</span>
+      <span class="scanner-step-label">Productpagina lezen</span>
+      <span class="scanner-step-example">→ label en claims gelezen</span>
+    </div>
+    <div class="scanner-step">
+      <span class="scanner-step-number">02</span>
+      <span class="scanner-step-label">Ingrediënten analyseren</span>
+      <span class="scanner-step-example">→ magnesiumbisglycinaat gedetecteerd</span>
+    </div>
+    <div class="scanner-step">
+      <span class="scanner-step-number">03</span>
+      <span class="scanner-step-label">Criteria controleren</span>
+      <span class="scanner-step-example">→ dosering ontbreekt</span>
+    </div>
+    <div class="scanner-step">
+      <span class="scanner-step-number">04</span>
+      <span class="scanner-step-label">Oordeel genereren</span>
+      <span class="scanner-step-example">→ transparantiescore verlaagd</span>
     </div>
   </div>
 
