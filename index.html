@@ -49,7 +49,7 @@
   /* ── NAV ── */
   nav {
     position: fixed;
-    top: 0; left: 0; right: 0;
+    top: 33px; left: 0; right: 0;
     z-index: 900;
     display: flex;
     align-items: center;
@@ -109,7 +109,7 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    padding: 120px 40px 80px;
+    padding: 153px 40px 80px;
     position: relative;
     overflow: hidden;
   }
@@ -1068,6 +1068,45 @@
     }
   }
 
+  /* ── BETA BANNER ── */
+  .beta-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: rgba(255,59,48,0.08);
+    border-bottom: 1px solid rgba(255,59,48,0.2);
+    padding: 8px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .beta-banner-text {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.5);
+    text-transform: uppercase;
+  }
+
+  .beta-banner-text span {
+    color: var(--red);
+    font-weight: 700;
+  }
+
+  @media (max-width: 768px) {
+    .beta-banner {
+      padding: 8px 20px;
+    }
+    .beta-banner-text {
+      font-size: 10px;
+      text-align: center;
+    }
+  }
+
   /* ── INTELLIGENCE SCOREKAART ── */
   .scorecard {
     display: grid;
@@ -1344,6 +1383,13 @@
 </style>
 </head>
 <body>
+
+<div class="beta-banner">
+  <p class="beta-banner-text">
+    <span>Beta</span> — Engine in validatie.
+    Beoordelingen kunnen afwijken van de definitieve versie.
+  </p>
+</div>
 
 <!-- NAV -->
 <nav>
