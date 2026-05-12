@@ -1752,3 +1752,354 @@ def get_result(job_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+# ═══════════════════════════════════════════════
+# DEEL 12 — AIRTABLE HELPERS
+# ═══════════════════════════════════════════════
+
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
+AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
+AIRTABLE_API_URL = "https://api.airtable.com/v0"
+
+def airtable_get(table_name, filter_formula=None, fields=None):
+    """Haal records op uit Airtable tabel."""
+    if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID:
+        print("AIRTABLE: geen API key of Base ID", flush=True)
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    params = {}
+    if filter_formula:
+        params["filterByFormula"] = filter_formula
+    if fields:
+        for i, f in enumerate(fields):
+            params[f"fields[{i}]"] = f
+
+    url = f"{AIRTABLE_API_URL}/{AIRTABLE_BASE_ID}/{table_name}"
+    records = []
+    offset = None
+
+    while True:
+        if offset:
+            params["offset"] = offset
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            records.extend(data.get("records", []))
+            offset = data.get("offset")
+            if not offset:
+                break
+        except Exception as e:
+            print(f"AIRTABLE GET ERROR ({table_name}): {e}", flush=True)
+            break
+
+    return records
+
+
+def airtable_post(table_name, fields):
+    """Maak nieuw record aan in Airtable."""
+    if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    url = f"{AIRTABLE_API_URL}/{AIRTABLE_BASE_ID}/{table_name}"
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json={"fields": fields},
+            timeout=15
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"AIRTABLE POST ERROR ({table_name}): {e}", flush=True)
+        return None
+
+
+def airtable_patch(table_name, record_id, fields):
+    """Update bestaand record in Airtable."""
+    if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    url = f"{AIRTABLE_API_URL}/{AIRTABLE_BASE_ID}/{table_name}/{record_id}"
+    try:
+        response = requests.patch(
+            url,
+            headers=headers,
+            json={"fields": fields},
+            timeout=15
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"AIRTABLE PATCH ERROR ({table_name}): {e}", flush=True)
+        return None
+
+
+def get_intake_context(intake_id):
+    """
+    Haalt alle relevante intake-data op uit Airtable voor een gegeven intake_id.
+    Combineert systeemscores, condities en clientprofiel.
+    """
+    context = {
+        "intake_id": intake_id,
+        "client_id": None,
+        "system_scores": {},
+        "active_conditions": [],
+        "stroom_type": None,
+    }
+
+    # Haal intake record op
+    intake_records = airtable_get(
+        "INTAKE_Intakes",
+        filter_formula=f"{{intake_id}}='{intake_id}'",
+        fields=["intake_id", "case_id"]
+    )
+    if not intake_records:
+        print(f"AIRTABLE: intake {intake_id} niet gevonden", flush=True)
+        return context
+
+    intake_record = intake_records[0]
+    intake_airtable_id = intake_record["id"]
+    intake_fields = intake_record.get("fields", {})
+
+    # Haal systeemscores op
+    scores_records = airtable_get(
+        "CASE_system_scores",
+        filter_formula=f"FIND('{intake_airtable_id}', ARRAYJOIN({{intake_id}}))",
+        fields=[
+            "intake_id", "score_darm", "score_metabole_regulatie",
+            "score_hpa_as", "score_mitochondrien", "score_hormonaal_immuun"
+        ]
+    )
+    if scores_records:
+        s = scores_records[0].get("fields", {})
+        context["system_scores"] = {
+            "darm":              s.get("score_darm", 0) or 0,
+            "metabole_regulatie": s.get("score_metabole_regulatie", 0) or 0,
+            "hpa_as":            s.get("score_hpa_as", 0) or 0,
+            "mitochondrien":     s.get("score_mitochondrien", 0) or 0,
+            "hormonaal_immuun":  s.get("score_hormonaal_immuun", 0) or 0,
+        }
+        print(f"AIRTABLE: systeemscores geladen voor {intake_id}", flush=True)
+
+    # Haal actieve condities op
+    conditions_records = airtable_get(
+        "CASE_conditions",
+        filter_formula=f"AND(FIND('{intake_airtable_id}', ARRAYJOIN({{intake_id}})), {{active_yn}}=1)",
+        fields=["intake_id", "condition_code", "condition_name", "severity", "source_module"]
+    )
+    context["active_conditions"] = [
+        {
+            "code":     r.get("fields", {}).get("condition_code", ""),
+            "name":     r.get("fields", {}).get("condition_name", ""),
+            "severity": r.get("fields", {}).get("severity", ""),
+            "module":   r.get("fields", {}).get("source_module", ""),
+        }
+        for r in conditions_records
+    ]
+    print(f"AIRTABLE: {len(context['active_conditions'])} condities geladen", flush=True)
+
+    return context
+
+
+def calculate_personal_fit(product_data, intake_context, base_score):
+    """
+    Berekent personal_fit_score op basis van:
+    - Generieke Funcify score als basis
+    - Systeemscores: relevant systeem verhoogt of verlaagt de fit
+    - Actieve condities: CTX-codes die matchen met het product verhogen fit
+    - Contra-indicaties: verlagen de fit significant
+    """
+    product_type = detect_product_type(product_data)
+    scores = intake_context.get("system_scores", {})
+    conditions = intake_context.get("active_conditions", [])
+
+    fit_modifier = 0
+
+    # Systeem-product matching
+    type_system_map = {
+        "OMEGA3":    ["darm", "hormonaal_immuun"],
+        "MINERAL":   ["mitochondrien", "hpa_as"],
+        "VITAMIN":   ["metabole_regulatie", "mitochondrien"],
+        "PROBIOTIC": ["darm"],
+        "BOTANICAL": ["hpa_as", "hormonaal_immuun"],
+        "SPORT":     ["mitochondrien"],
+        "PROTEIN":   ["mitochondrien"],
+        "IRON":      ["hormonaal_immuun"],
+        "DEFAULT":   [],
+    }
+
+    relevant_systems = type_system_map.get(product_type, [])
+    for system in relevant_systems:
+        score = scores.get(system, 0)
+        if score >= 7:
+            fit_modifier += 8
+        elif score >= 5:
+            fit_modifier += 4
+        elif score <= 2:
+            fit_modifier -= 5
+
+    # CTX-code matching
+    active_codes = [c.get("code", "").upper() for c in conditions]
+    critical_conditions = [
+        c for c in conditions if c.get("severity") == "Critical"
+    ]
+    if critical_conditions:
+        fit_modifier += 10
+
+    # Contra-indicatie check via context flags
+    active_ings = [
+        i for i in product_data.get("ingredients", [])
+        if i.get("type") != "vul-additief"
+    ]
+    flags = evaluate_context_flags(active_ings)
+    critical_flags = [f for f in flags if f.get("severity") == "Critical"]
+    major_flags = [f for f in flags if f.get("severity") == "Major"]
+
+    contra_indicated = False
+    contra_reason = ""
+    interaction_risk = "Geen"
+
+    if critical_flags:
+        fit_modifier -= 25
+        contra_indicated = True
+        contra_reason = critical_flags[0].get("message", "")
+        interaction_risk = "Kritisch"
+    elif major_flags:
+        fit_modifier -= 10
+        interaction_risk = "Hoog"
+
+    # Bereken personal fit score
+    personal_fit = max(0, min(100, base_score + fit_modifier))
+
+    # Label bepalen
+    if personal_fit >= 85:
+        fit_label = "Uitstekende fit"
+    elif personal_fit >= 70:
+        fit_label = "Goede fit"
+    elif personal_fit >= 50:
+        fit_label = "Neutrale fit"
+    elif personal_fit >= 35:
+        fit_label = "Matige fit"
+    else:
+        fit_label = "Niet passend"
+
+    return {
+        "personal_fit_score":  personal_fit,
+        "personal_fit_label":  fit_label,
+        "score_delta":         personal_fit - base_score,
+        "contra_indicated":    contra_indicated,
+        "contra_reason":       contra_reason,
+        "interaction_risk":    interaction_risk,
+        "interaction_details": "; ".join([f.get("message", "") for f in major_flags[:3]]),
+        "active_cf_codes":     ", ".join(active_codes[:10]),
+    }
+
+
+# ═══════════════════════════════════════════════
+# DEEL 13 — PERSONAL SCORE ROUTE
+# ═══════════════════════════════════════════════
+
+@app.route("/personal-score", methods=["POST"])
+def personal_score():
+    """
+    Berekent een gepersonaliseerde productscore op basis van:
+    - intake_id: de Airtable intake waarvoor de beoordeling wordt gemaakt
+    - product_data: de al gescoorde productdata (output van /score)
+    - base_score: de generieke Funcify score (0-100)
+    """
+    data = request.get_json(silent=True) or {}
+
+    intake_id  = str(data.get("intake_id", "")).strip()
+    product_data = data.get("product_data", {})
+    base_score = int(data.get("base_score", 0))
+
+    if not intake_id:
+        return jsonify({"error": "intake_id is verplicht"}), 400
+
+    if not product_data:
+        return jsonify({"error": "product_data is verplicht"}), 400
+
+    print(f"PERSONAL_SCORE: intake={intake_id}, base_score={base_score}", flush=True)
+
+    # Stap 1: haal intake context op uit Airtable
+    try:
+        intake_context = get_intake_context(intake_id)
+        print(f"PERSONAL_SCORE: context geladen — "
+              f"{len(intake_context.get('active_conditions', []))} condities, "
+              f"scores: {intake_context.get('system_scores', {})}", flush=True)
+    except Exception as e:
+        print(f"PERSONAL_SCORE CONTEXT ERROR: {e}", flush=True)
+        intake_context = {
+            "intake_id": intake_id,
+            "system_scores": {},
+            "active_conditions": [],
+        }
+
+    # Stap 2: bereken personal fit
+    try:
+        fit_result = calculate_personal_fit(product_data, intake_context, base_score)
+        print(f"PERSONAL_SCORE: fit={fit_result['personal_fit_score']} "
+              f"({fit_result['personal_fit_label']})", flush=True)
+    except Exception as e:
+        print(f"PERSONAL_SCORE FIT ERROR: {e}", flush=True)
+        fit_result = {
+            "personal_fit_score":  base_score,
+            "personal_fit_label":  "Neutrale fit",
+            "score_delta":         0,
+            "contra_indicated":    False,
+            "contra_reason":       "",
+            "interaction_risk":    "Geen",
+            "interaction_details": "",
+            "active_cf_codes":     "",
+        }
+
+    # Stap 3: sla op in REVIEW_Context_assessment
+    try:
+        product_url = str(product_data.get("url", ""))
+
+        assessment_fields = {
+            "personal_fit_score": fit_result["personal_fit_score"],
+            "personal_fit_label": fit_result["personal_fit_label"],
+            "contra_indicated":   fit_result["contra_indicated"],
+            "contra_reason":      fit_result["contra_reason"],
+            "interaction_risk":   fit_result["interaction_risk"],
+            "interaction_details": fit_result["interaction_details"],
+            "active_cf_codes_triggered": fit_result["active_cf_codes"],
+            "auto_generated":     True,
+        }
+
+        saved = airtable_post("REVIEW_Context_assessment", assessment_fields)
+        if saved:
+            print(f"PERSONAL_SCORE: opgeslagen in REVIEW_Context_assessment", flush=True)
+    except Exception as e:
+        print(f"PERSONAL_SCORE SAVE ERROR: {e}", flush=True)
+
+    # Stap 4: response
+    response_body = {
+        "intake_id":           intake_id,
+        "base_score":          base_score,
+        "personal_fit_score":  fit_result["personal_fit_score"],
+        "personal_fit_label":  fit_result["personal_fit_label"],
+        "score_delta":         fit_result["score_delta"],
+        "contra_indicated":    fit_result["contra_indicated"],
+        "contra_reason":       fit_result["contra_reason"],
+        "interaction_risk":    fit_result["interaction_risk"],
+        "interaction_details": fit_result["interaction_details"],
+        "active_conditions":   intake_context.get("active_conditions", []),
+        "system_scores":       intake_context.get("system_scores", {}),
+    }
+
+    return jsonify(response_body)
