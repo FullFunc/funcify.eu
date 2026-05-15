@@ -327,7 +327,8 @@ def load_all_data():
     try:
         records = airtable_get("KM_ingredient_forms", fields=[
             "airtable_row_no", "form_name_search", "relative_bioavailability_ratio",
-            "bioavailability_score", "notes", "solubility_type"
+            "bioavailability_score", "notes", "solubility_type",
+            "form_profile", "active_moiety", "activity_type"
         ])
         forms = []
         for rec in records:
@@ -340,13 +341,16 @@ def load_all_data():
             except (ValueError, TypeError):
                 ratio = 1.0
             forms.append({
-                "ing_code": ing_code,
-                "search_terms": search_terms,
+                "ing_code":      ing_code,
+                "search_terms":  search_terms,
                 "search_phrase": search_phrase,
-                "ratio": ratio,
-                "score": str(f.get("bioavailability_score", "") or ""),
-                "notes": str(f.get("notes", "") or ""),
-                "solubility": str(f.get("solubility_type", "") or ""),
+                "ratio":         ratio,
+                "score":         str(f.get("bioavailability_score", "") or ""),
+                "notes":         str(f.get("notes", "") or "").lower(),
+                "solubility":    str(f.get("solubility_type", "") or ""),
+                "form_profile":  str(f.get("form_profile", "") or "").lower(),
+                "active_moiety": str(f.get("active_moiety", "") or "").lower(),
+                "activity_type": str(f.get("activity_type", "") or "").lower(),
             })
         _cache["forms"] = forms
         print(f"BIOAVAILABILITY FORMS GELADEN: {len(forms)}", flush=True)
@@ -452,32 +456,78 @@ def _split_active_excipients(ingredients):
     return active, excipients
 
 
+_VORM_RULES = [
+    (["bioenhanced", "bioperine", "piperine", "black pepper", "zwarte peper", "enhanced absorption"],
+     lambda f: f["form_profile"] == "bioenhanced_extract" or "piperine" in f["notes"] or "bioenhancer" in f["notes"]),
+    (["liposomal", "liposomaal"],
+     lambda f: f["form_profile"] == "liposomal" or "liposomal" in f["notes"]),
+    (["extract", "gestandaardiseerd", "standardized", "% extract"],
+     lambda f: f["form_profile"] == "standardized_extract"),
+    (["whole plant", "hele plant", "gedroogd kruid", "root powder", "poeder"],
+     lambda f: f["form_profile"] == "botanical_whole"),
+    (["chelated", "gechelateerd", "bisglycinate", "glycinate", "malate", "chelaat"],
+     lambda f: "chelated" in f["form_profile"] or "chelat" in f["notes"] or "glycin" in f["notes"]),
+    (["oxide"],
+     lambda f: "oxide" in f["notes"]),
+    (["citrate", "citraat"],
+     lambda f: "citrate" in f["notes"] or "citraat" in f["notes"]),
+    (["ethyl ester", "ee form", "re-esterified"],
+     lambda f: "ethyl_ester" in f["notes"] or "ester" in f["notes"]),
+    (["triglyceride", "natural triglyceride", "tg form"],
+     lambda f: "triglyceride" in f["notes"] or "natural_marine" in f["notes"]),
+    (["methyl-", "methylated", "gemethyleerd", "active form", "methylfolaat", "methylcobalamine", "5-mthf", "p-5-p", "pyridoxal"],
+     lambda f: "methylated" in f["form_profile"] or "methyl" in f["notes"] or "active" in f["notes"]),
+    (["sulfate", "sulfaat"],
+     lambda f: "sulfate" in f["notes"]),
+    (["carbonate", "carbonaat"],
+     lambda f: "carbonate" in f["notes"]),
+]
+
+
 def lookup_bioavailability(ingredient_name, ingredient_form=""):
     forms = _cache.get("forms", [])
     if not forms:
         return None
     combined = (str(ingredient_name) + " " + str(ingredient_form)).lower()
-    best = None
-    best_score = 0
+
+    # STAP A — filter op ingredient-match
+    candidates = []
     for form in forms:
-        match_score = sum(
-            len(term)
-            for term in form["search_terms"]
-            if term in combined
+        ingredient_score = sum(
+            len(term) for term in form["search_terms"] if term in combined
         )
-        if match_score > best_score:
-            best_score = match_score
-            best = form
-    if best_score >= 4:
-        return {
-            "ing_code": best["ing_code"],
-            "ratio": best["ratio"],
-            "score": best["score"],
-            "notes": best["notes"],
-            "solubility": best["solubility"],
-            "match_score": best_score,
-        }
-    return None
+        if ingredient_score >= 4:
+            candidates.append((form, ingredient_score))
+
+    if not candidates:
+        return None
+
+    # STAP B — vorm-score per kandidaat
+    scored = []
+    for form, ingredient_score in candidates:
+        vorm_score = 0
+        for trigger_keywords, check_fn in _VORM_RULES:
+            if any(kw in combined for kw in trigger_keywords) and check_fn(form):
+                vorm_score += 10
+        scored.append((form, ingredient_score, vorm_score))
+
+    # STAP C — ranking: hoogste total eerst, tie-break op laagste ratio
+    scored.sort(key=lambda x: (-(x[1] + x[2]), x[0]["ratio"]))
+    best, ingredient_score, vorm_score = scored[0]
+
+    return {
+        "ing_code":         best["ing_code"],
+        "ratio":            best["ratio"],
+        "score":            best["score"],
+        "notes":            best["notes"],
+        "solubility":       best["solubility"],
+        "form_profile":     best["form_profile"],
+        "active_moiety":    best["active_moiety"],
+        "activity_type":    best["activity_type"],
+        "ingredient_score": ingredient_score,
+        "vorm_score":       vorm_score,
+        "total_score":      ingredient_score + vorm_score,
+    }
 
 # ═══════════════════════════════════════════════
 # DEEL 5 — CONTEXT FLAGS EN COFACTOREN
@@ -1495,6 +1545,11 @@ def admin_lookup_ingredient():
         {"test": "krill oil",               "form": "", "expected": "HOOG (ratio ~1.2)"},
         {"test": "curcumine",               "form": "", "expected": "LAAG (ratio onder 1.0)"},
         {"test": "curcumine",               "form": "met piperine", "expected": "HOOG (ratio ~2.0)"},
+        {"test": "curcumine basis",         "form": "",              "expected": "ING0608/ING0610 (ratio 0.5-1.0)"},
+        {"test": "curcumine",               "form": "met piperine",  "expected": "ING0611 (ratio 2.0)"},
+        {"test": "curcumine",               "form": "bioenhanced",   "expected": "ING0611 (ratio 2.0)"},
+        {"test": "hele plant curcuma",      "form": "",              "expected": "ING0609 (ratio 0.3)"},
+        {"test": "magnesium citraat",       "form": "",              "expected": "magnesium citrate record (geen oxide!)"},
     ]
 
     def quality_label(ratio):
@@ -1535,6 +1590,10 @@ def admin_lookup_ingredient():
                     "ing_code": bio["ing_code"],
                     "ratio": bio["ratio"],
                     "quality_label": label,
+                    "form_profile": bio.get("form_profile"),
+                    "notes": bio.get("notes"),
+                    "ingredient_score": bio.get("ingredient_score"),
+                    "vorm_score": bio.get("vorm_score"),
                     "expected": case["expected"],
                     "status": status,
                 })
@@ -1545,6 +1604,10 @@ def admin_lookup_ingredient():
                     "ing_code": None,
                     "ratio": None,
                     "quality_label": None,
+                    "form_profile": None,
+                    "notes": None,
+                    "ingredient_score": None,
+                    "vorm_score": None,
                     "expected": case["expected"],
                     "status": "NOT_FOUND",
                 })
