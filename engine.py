@@ -1824,52 +1824,10 @@ def get_result(job_id):
 
 
 # ═══════════════════════════════════════════════
-# DEEL 12 — AIRTABLE
-# ═══════════════════════════════════════════════
-
-def airtable_get(table_name, fields=None):
-    """Haalt records op uit Airtable tabel met paginering."""
-    api_key = os.environ.get("AIRTABLE_API_KEY")
-    base_id = os.environ.get("AIRTABLE_BASE_ID")
-    if not api_key or not base_id:
-        print(f"AIRTABLE: geen API key of base ID voor {table_name}", flush=True)
-        return []
-
-    url = f"https://api.airtable.com/v0/{base_id}/{table_name}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    params = {}
-    if fields:
-        params["fields[]"] = fields
-
-    records = []
-    while True:
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            records.extend(data.get("records", []))
-            offset = data.get("offset")
-            if not offset:
-                break
-            params["offset"] = offset
-        except Exception as e:
-            print(f"AIRTABLE ERROR ({table_name}): {e}", flush=True)
-            break
-
-    return records
-
-
-with app.app_context():
-    load_all_data()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-# ═══════════════════════════════════════════════
 # DEEL 12 — AIRTABLE HELPERS
 # ═══════════════════════════════════════════════
 
-AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
+AIRTABLE_BASE_ID = (os.environ.get("AIRTABLE_BASE_ID") or "").split("/")[0]
 AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
 AIRTABLE_API_URL = "https://api.airtable.com/v0"
 
@@ -2216,3 +2174,11 @@ def personal_score():
     }
 
     return jsonify(response_body)
+
+
+with app.app_context():
+    load_all_data()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
