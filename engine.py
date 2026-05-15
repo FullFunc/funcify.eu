@@ -323,9 +323,36 @@ def load_all_data():
     else:
         _cache["ui_content"] = {}
 
-
-with app.app_context():
-    load_all_data()
+    # KM_ingredient_forms — bioavailability ratio per ingredientvorm
+    try:
+        records = airtable_get("KM_ingredient_forms", fields=[
+            "airtable_row_no", "form_name_search", "relative_bioavailability_ratio",
+            "bioavailability_score", "notes", "solubility_type"
+        ])
+        forms = []
+        for rec in records:
+            f = rec.get("fields", {})
+            ing_code = str(f.get("airtable_row_no", "")).strip()
+            search_phrase = str(f.get("form_name_search", "")).strip().lower()
+            search_terms = [t for t in search_phrase.split() if len(t) >= 3]
+            try:
+                ratio = float(f.get("relative_bioavailability_ratio", 1.0) or 1.0)
+            except (ValueError, TypeError):
+                ratio = 1.0
+            forms.append({
+                "ing_code": ing_code,
+                "search_terms": search_terms,
+                "search_phrase": search_phrase,
+                "ratio": ratio,
+                "score": str(f.get("bioavailability_score", "") or ""),
+                "notes": str(f.get("notes", "") or ""),
+                "solubility": str(f.get("solubility_type", "") or ""),
+            })
+        _cache["forms"] = forms
+        print(f"BIOAVAILABILITY FORMS GELADEN: {len(forms)}", flush=True)
+    except Exception as e:
+        print(f"AIRTABLE FORMS ERROR: {e}", flush=True)
+        _cache["forms"] = []
 
 # ═══════════════════════════════════════════════
 # DEEL 4 — HELPER FUNCTIES
@@ -423,6 +450,34 @@ def _split_active_excipients(ingredients):
     active = [i for i in ingredients if i.get("type") != "vul-additief"]
     excipients = [i for i in ingredients if i.get("type") == "vul-additief"]
     return active, excipients
+
+
+def lookup_bioavailability(ingredient_name, ingredient_form=""):
+    forms = _cache.get("forms", [])
+    if not forms:
+        return None
+    combined = (str(ingredient_name) + " " + str(ingredient_form)).lower()
+    best = None
+    best_score = 0
+    for form in forms:
+        match_score = sum(
+            len(term)
+            for term in form["search_terms"]
+            if term in combined
+        )
+        if match_score > best_score:
+            best_score = match_score
+            best = form
+    if best_score >= 4:
+        return {
+            "ing_code": best["ing_code"],
+            "ratio": best["ratio"],
+            "score": best["score"],
+            "notes": best["notes"],
+            "solubility": best["solubility"],
+            "match_score": best_score,
+        }
+    return None
 
 # ═══════════════════════════════════════════════
 # DEEL 5 — CONTEXT FLAGS EN COFACTOREN
@@ -1022,12 +1077,31 @@ def evaluate_criteria_with_claude(product_data, criteria, product_type, url=""):
                 "key_weaknesses": [], "inferior_forms_found": []}, []
 
     # Gedeelde productcontext
-    ingredients_text = "\n".join([
-        f"- {i.get('name','')}: {i.get('amount','?')} "
-        f"{i.get('unit','')} (vorm: {i.get('form','niet vermeld')})"
-        for i in product_data.get("ingredients", [])[:30]
-        if i.get("type") != "vul-additief"
-    ])
+    ing_lines = []
+    for i in product_data.get("ingredients", [])[:30]:
+        if i.get("type") == "vul-additief":
+            continue
+        base = (
+            f"- {i.get('name','')}: {i.get('amount','?')} "
+            f"{i.get('unit','')} (vorm: {i.get('form','niet vermeld')})"
+        )
+        bio = lookup_bioavailability(i.get("name", ""), i.get("form", ""))
+        if bio:
+            ratio = bio["ratio"]
+            if ratio >= 1.2:
+                label = "HOOG — superieure vorm"
+            elif ratio >= 0.9:
+                label = "GOED — standaard"
+            elif ratio >= 0.6:
+                label = "MATIG — suboptimaal"
+            else:
+                label = "LAAG — inferieur"
+            bio_str = f" | biobeschikbaarheid: {ratio} ({label})"
+            if bio.get("notes"):
+                bio_str += f" | bron: {bio['notes'][:80]}"
+            base += bio_str
+        ing_lines.append(base)
+    ingredients_text = "\n".join(ing_lines)
 
     product_context = f"""Product: {product_data.get('product_name','Onbekend')}
 Merk: {product_data.get('brand_name','Onbekend')}
@@ -1748,6 +1822,45 @@ def get_result(job_id):
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
+
+# ═══════════════════════════════════════════════
+# DEEL 12 — AIRTABLE
+# ═══════════════════════════════════════════════
+
+def airtable_get(table_name, fields=None):
+    """Haalt records op uit Airtable tabel met paginering."""
+    api_key = os.environ.get("AIRTABLE_API_KEY")
+    base_id = os.environ.get("AIRTABLE_BASE_ID")
+    if not api_key or not base_id:
+        print(f"AIRTABLE: geen API key of base ID voor {table_name}", flush=True)
+        return []
+
+    url = f"https://api.airtable.com/v0/{base_id}/{table_name}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    params = {}
+    if fields:
+        params["fields[]"] = fields
+
+    records = []
+    while True:
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            records.extend(data.get("records", []))
+            offset = data.get("offset")
+            if not offset:
+                break
+            params["offset"] = offset
+        except Exception as e:
+            print(f"AIRTABLE ERROR ({table_name}): {e}", flush=True)
+            break
+
+    return records
+
+
+with app.app_context():
+    load_all_data()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
