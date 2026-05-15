@@ -326,14 +326,14 @@ def load_all_data():
     # KM_ingredient_forms — bioavailability ratio per ingredientvorm
     try:
         records = airtable_get("KM_ingredient_forms", fields=[
-            "airtable_row_no", "form_name_search", "relative_bioavailability_ratio",
+            "ingredient_form_id", "form_name_search", "relative_bioavailability_ratio",
             "bioavailability_score", "notes", "solubility_type",
             "form_profile", "active_moiety", "activity_type"
         ])
         forms = []
         for rec in records:
             f = rec.get("fields", {})
-            ing_code = str(f.get("airtable_row_no", "")).strip()
+            ing_code = str(f.get("ingredient_form_id", "")).strip()
             search_phrase = str(f.get("form_name_search", "")).strip().lower()
             search_terms = [t for t in search_phrase.split() if len(t) >= 3]
             try:
