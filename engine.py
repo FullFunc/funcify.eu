@@ -1476,6 +1476,98 @@ def health():
     }), 200
 
 
+# Interne admin endpoint — voor QA en debugging van bioavailability lookup
+@app.route("/admin/lookup-ingredient", methods=["GET"])
+def admin_lookup_ingredient():
+    BATCH_TESTS = [
+        {"test": "magnesium oxide",        "form": "", "expected": "LAAG (ratio ~0.2)"},
+        {"test": "magnesium bisglycinate",  "form": "", "expected": "HOOG (ratio ~1.4)"},
+        {"test": "magnesium citrate",       "form": "", "expected": "MATIG (ratio ~0.65)"},
+        {"test": "magnesium l-threonate",   "form": "", "expected": "HOOG (ratio ~1.6)"},
+        {"test": "foliumzuur",              "form": "", "expected": "MATIG (ratio ~0.6)"},
+        {"test": "5-mthf",                  "form": "", "expected": "HOOG (ratio ~1.0)"},
+        {"test": "methylfolaat",            "form": "", "expected": "HOOG (ratio ~1.0)"},
+        {"test": "cyanocobalamine",         "form": "", "expected": "MATIG (ratio ~0.5-0.7)"},
+        {"test": "methylcobalamine",        "form": "", "expected": "HOOG (ratio ~1.0)"},
+        {"test": "cholecalciferol",         "form": "", "expected": "HOOG (ratio ~1.0)"},
+        {"test": "ergocalciferol",          "form": "", "expected": "MATIG"},
+        {"test": "omega-3 ethyl ester",     "form": "", "expected": "MATIG"},
+        {"test": "krill oil",               "form": "", "expected": "HOOG (ratio ~1.2)"},
+        {"test": "curcumine",               "form": "", "expected": "LAAG (ratio onder 1.0)"},
+        {"test": "curcumine",               "form": "met piperine", "expected": "HOOG (ratio ~2.0)"},
+    ]
+
+    def quality_label(ratio):
+        if ratio >= 1.2:
+            return "HOOG (superieure vorm)"
+        if ratio >= 0.9:
+            return "GOED (standaard vorm)"
+        if ratio >= 0.6:
+            return "MATIG (suboptimale vorm)"
+        return "LAAG (inferieure vorm)"
+
+    def expected_tier(expected_str):
+        s = expected_str.upper()
+        if s.startswith("HOOG"):
+            return "HOOG"
+        if s.startswith("GOED"):
+            return "GOED"
+        if s.startswith("MATIG"):
+            return "MATIG"
+        if s.startswith("LAAG"):
+            return "LAAG"
+        return None
+
+    if request.args.get("batch", "").lower() == "true":
+        results = []
+        matched_count = 0
+        for case in BATCH_TESTS:
+            bio = lookup_bioavailability(case["test"], case.get("form", ""))
+            if bio:
+                matched_count += 1
+                label = quality_label(bio["ratio"])
+                actual_tier = label.split(" ")[0]
+                exp_tier = expected_tier(case["expected"])
+                status = "OK" if (exp_tier is None or actual_tier == exp_tier) else "MISMATCH"
+                results.append({
+                    "test": case["test"] + (f" ({case['form']})" if case.get("form") else ""),
+                    "matched": True,
+                    "ing_code": bio["ing_code"],
+                    "ratio": bio["ratio"],
+                    "quality_label": label,
+                    "expected": case["expected"],
+                    "status": status,
+                })
+            else:
+                results.append({
+                    "test": case["test"] + (f" ({case['form']})" if case.get("form") else ""),
+                    "matched": False,
+                    "ing_code": None,
+                    "ratio": None,
+                    "quality_label": None,
+                    "expected": case["expected"],
+                    "status": "NOT_FOUND",
+                })
+        return jsonify({
+            "total_tests": len(BATCH_TESTS),
+            "matched": matched_count,
+            "not_matched": len(BATCH_TESTS) - matched_count,
+            "results": results,
+        })
+
+    name = request.args.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Query parameter 'name' is verplicht"}), 400
+
+    form = request.args.get("form", "").strip()
+    bio = lookup_bioavailability(name, form)
+    return jsonify({
+        "input": {"name": name, "form": form},
+        "match": bio,
+        "quality_label": quality_label(bio["ratio"]) if bio else None,
+    })
+
+
 @app.route("/test-scrapingbee", methods=["GET"])
 def test_scrapingbee():
     import time
